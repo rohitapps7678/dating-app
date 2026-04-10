@@ -20,6 +20,8 @@ def send_otp_email(to_email: str, otp: str) -> bool:
     Returns True on success, False on failure.
     """
     subject = f"{otp} — Aapka OpenTalk Login OTP"
+    print("LOGIN:", BREVO_SMTP_LOGIN)
+    print("PASS:", BREVO_SMTP_PASSWORD)
 
     html_body = f"""
     <!DOCTYPE html>
