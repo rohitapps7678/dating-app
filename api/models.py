@@ -1,0 +1,192 @@
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.db import models
+from django.utils import timezone
+import uuid
+
+INTEREST_CHOICES = [
+    "Travel", "Music", "Movies", "Books", "Gaming",
+    "Fitness", "Cooking", "Photography", "Art", "Dance",
+    "Sports", "Hiking", "Coffee", "Fashion", "Technology",
+    "Yoga", "Meditation", "Animals", "Food", "Cycling",
+]
+
+POSITION_CHOICES = [
+    ("top",      "Top"),
+    ("vers_top", "Vers Top"),
+    ("versatile","Versatile"),
+    ("vers_bot", "Vers Bottom"),
+    ("bottom",   "Bottom"),
+]
+
+
+class UserManager(BaseUserManager):
+    def create_user(self, phone, password=None, **extra_fields):
+        if not phone:
+            raise ValueError("Phone number required")
+        user = self.model(phone=phone, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, phone, password=None, **extra_fields):
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        user = self.model(phone=phone, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+
+class User(AbstractBaseUser, PermissionsMixin):
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    phone      = models.CharField(max_length=100, unique=True)   # stores email for email-OTP users
+    is_active  = models.BooleanField(default=True)
+    is_staff   = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    USERNAME_FIELD  = "phone"
+    REQUIRED_FIELDS = []
+    objects         = UserManager()
+
+    def __str__(self):
+        return self.phone
+
+
+# ─────────────────────────────────────
+# EMAIL OTP  (replaces Firebase auth)
+# ─────────────────────────────────────
+
+class EmailOTP(models.Model):
+    """
+    Stores a 6-digit OTP for a given email address.
+    - expires_at: 10 minutes from creation
+    - is_used: True once verified (prevent reuse)
+    """
+    email      = models.EmailField()
+    otp        = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used    = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes  = [models.Index(fields=["email", "otp"])]
+
+    def is_valid(self):
+        return not self.is_used and timezone.now() < self.expires_at
+
+    def __str__(self):
+        return f"{self.email} — {self.otp} ({'used' if self.is_used else 'active'})"
+
+
+# ─────────────────────────────────────
+# PROFILE
+# ─────────────────────────────────────
+
+class Profile(models.Model):
+    GENDER_CHOICES = [
+        ("M", "Male"),
+        ("F", "Female"),
+        ("O", "Other"),
+    ]
+
+    user        = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    name        = models.CharField(max_length=50)
+    bio         = models.TextField(max_length=300, blank=True)
+    age         = models.PositiveSmallIntegerField(null=True, blank=True)
+    gender      = models.CharField(max_length=1, choices=GENDER_CHOICES, blank=True)
+    photo_url   = models.URLField(max_length=500, blank=True, null=True)
+    interests   = models.JSONField(default=list, blank=True)
+
+    position    = models.CharField(
+        max_length=10, choices=POSITION_CHOICES,
+        blank=True, null=True,
+    )
+    has_room    = models.BooleanField(null=True, blank=True)
+
+    latitude    = models.FloatField(null=True, blank=True)
+    longitude   = models.FloatField(null=True, blank=True)
+    is_complete = models.BooleanField(default=False)
+    is_live     = models.BooleanField(default=False)
+    live_since  = models.DateTimeField(null=True, blank=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.user.phone})"
+
+    def go_live(self):
+        self.is_live    = True
+        self.live_since = timezone.now()
+        self.save(update_fields=["is_live", "live_since"])
+
+    def go_offline(self):
+        self.is_live    = False
+        self.live_since = None
+        self.save(update_fields=["is_live", "live_since"])
+
+    def common_interests(self, other_profile):
+        return list(set(self.interests) & set(other_profile.interests))
+
+    def interest_score(self, other_profile):
+        if not self.interests or not other_profile.interests:
+            return 0
+        common = len(self.common_interests(other_profile))
+        total  = len(set(self.interests) | set(other_profile.interests))
+        return round((common / total) * 100) if total > 0 else 0
+
+
+class Like(models.Model):
+    sender     = models.ForeignKey(User, on_delete=models.CASCADE, related_name="likes_sent")
+    receiver   = models.ForeignKey(User, on_delete=models.CASCADE, related_name="likes_received")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("sender", "receiver")
+
+
+class Match(models.Model):
+    user1      = models.ForeignKey(User, on_delete=models.CASCADE, related_name="matches_as_user1")
+    user2      = models.ForeignKey(User, on_delete=models.CASCADE, related_name="matches_as_user2")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user1", "user2")
+
+
+class Conversation(models.Model):
+    match      = models.OneToOneField(Match, on_delete=models.CASCADE, related_name="conversation")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class Message(models.Model):
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
+    sender       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="messages_sent")
+    text         = models.TextField()
+    is_read      = models.BooleanField(default=False)
+    created_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+
+class Block(models.Model):
+    blocker    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="blocked_users")
+    blocked    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="blocked_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("blocker", "blocked")
+
+
+class Report(models.Model):
+    REASON_CHOICES = [
+        ("spam",       "Spam"),
+        ("fake",       "Fake Profile"),
+        ("harassment", "Harassment"),
+        ("other",      "Other"),
+    ]
+    reporter    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reports_made")
+    reported    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reports_received")
+    reason      = models.CharField(max_length=20, choices=REASON_CHOICES)
+    description = models.TextField(max_length=500, blank=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
