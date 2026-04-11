@@ -1,27 +1,21 @@
 import os
-import smtplib
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import requests
 
 logger = logging.getLogger(__name__)
 
-BREVO_SMTP_HOST     = "smtp-relay.brevo.com"
-BREVO_SMTP_PORT     = 587
-BREVO_SMTP_LOGIN    = os.getenv("BREVO_SMTP_LOGIN",    "a7a63e001@smtp-brevo.com")
-BREVO_SMTP_PASSWORD = os.getenv("BREVO_SMTP_PASSWORD", "")
-BREVO_FROM_EMAIL    = os.getenv("BREVO_FROM_EMAIL",    "noreply@opentalk.app")
-BREVO_FROM_NAME     = os.getenv("BREVO_FROM_NAME",     "OpenTalk")
+BREVO_API_KEY   = os.getenv("BREVO_API_KEY")
+BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "noreply@opentalk.app")
+BREVO_FROM_NAME  = os.getenv("BREVO_FROM_NAME", "OpenTalk")
 
 
 def send_otp_email(to_email: str, otp: str) -> bool:
     """
-    Brevo SMTP relay se OTP email bhejta hai.
-    Returns True on success, False on failure.
+    Brevo API se OTP email bhejta hai (SMTP nahi use karta)
+    Returns True on success, False on failure
     """
+
     subject = f"{otp} — Aapka OpenTalk Login OTP"
-    print("LOGIN:", BREVO_SMTP_LOGIN)
-    print("PASS:", BREVO_SMTP_PASSWORD)
 
     html_body = f"""
     <!DOCTYPE html>
@@ -76,31 +70,37 @@ def send_otp_email(to_email: str, otp: str) -> bool:
 
     text_body = f"Aapka OpenTalk OTP: {otp}\n\n10 minute mein expire hoga.\nKisi se share mat karo."
 
+    url = "https://api.brevo.com/v3/smtp/email"
+
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json"
+    }
+
+    data = {
+        "sender": {
+            "name": BREVO_FROM_NAME,
+            "email": BREVO_FROM_EMAIL
+        },
+        "to": [
+            {"email": to_email}
+        ],
+        "subject": subject,
+        "htmlContent": html_body,
+        "textContent": text_body
+    }
+
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = f"{BREVO_FROM_NAME} <{BREVO_FROM_EMAIL}>"
-        msg["To"]      = to_email
+        response = requests.post(url, json=data, headers=headers, timeout=20)
 
-        msg.attach(MIMEText(text_body, "plain", "utf-8"))
-        msg.attach(MIMEText(html_body, "html",  "utf-8"))
+        if response.status_code == 201:
+            logger.info(f"[Brevo API] OTP email sent to {to_email}")
+            return True
+        else:
+            logger.error(f"[Brevo API] Error: {response.status_code} - {response.text}")
+            return False
 
-        with smtplib.SMTP(BREVO_SMTP_HOST, BREVO_SMTP_PORT, timeout=60) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(BREVO_SMTP_LOGIN, BREVO_SMTP_PASSWORD)
-            server.sendmail(BREVO_FROM_EMAIL, to_email, msg.as_string())
-
-        logger.info(f"[Brevo] OTP email sent to {to_email}")
-        return True
-
-    except smtplib.SMTPAuthenticationError:
-        logger.error("[Brevo] SMTP auth failed — check BREVO_SMTP_LOGIN/PASSWORD in .env")
-        return False
-    except smtplib.SMTPException as e:
-        logger.error(f"[Brevo] SMTP error: {e}")
-        return False
     except Exception as e:
-        logger.error(f"[Brevo] Unexpected error: {e}")
+        logger.error(f"[Brevo API] Exception: {e}")
         return False
