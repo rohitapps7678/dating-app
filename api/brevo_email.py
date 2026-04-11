@@ -85,7 +85,7 @@ def send_otp_email(to_email: str, otp: str) -> bool:
         msg.attach(MIMEText(text_body, "plain", "utf-8"))
         msg.attach(MIMEText(html_body, "html",  "utf-8"))
 
-        with smtplib.SMTP(BREVO_SMTP_HOST, BREVO_SMTP_PORT, timeout=15) as server:
+        with smtplib.SMTP(BREVO_SMTP_HOST, BREVO_SMTP_PORT, timeout=60) as server:
             server.ehlo()
             server.starttls()
             server.ehlo()
