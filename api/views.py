@@ -42,20 +42,25 @@ def _generate_otp():
 # ─────────────────────────────────────────
 
 class HealthView(APIView):
+    """
+    Lightweight Health Check - Neon CU bachane ke liye
+    Database check completely removed.
+    Sirf yeh check karega ki Django app chal raha hai.
+    """
+
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        db_ok = True
-        try:
-            User.objects.exists()
-        except Exception:
-            db_ok = False
         return Response({
-            "status":    "ok" if db_ok else "degraded",
+            "status": "ok",
             "timestamp": timezone.now().isoformat(),
-            "checks":    {"database": "ok" if db_ok else "error", "api": "ok"},
-            "version":   "1.0.0",
-        }, status=200 if db_ok else 503)
+            "checks": {
+                "database": "skipped",   # ← Ab check nahi hoga
+                "api": "ok"
+            },
+            "message": "API is running (Database check disabled to save Neon CU)",
+            "version": "1.0.0",
+        }, status=200)
 
 
 # ─────────────────────────────────────────
