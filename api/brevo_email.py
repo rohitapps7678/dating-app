@@ -1,19 +1,36 @@
 import os
 import logging
 import requests
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-BREVO_API_KEY   = os.getenv("BREVO_API_KEY")
-BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "noreply@opentalk.app")
-BREVO_FROM_NAME  = os.getenv("BREVO_FROM_NAME", "OpenTalk")
+# Load environment variables once
+BREVO_API_KEY: Optional[str] = os.getenv("BREVO_API_KEY")
+BREVO_FROM_EMAIL: str = os.getenv("BREVO_FROM_EMAIL", "noreply@opentalk.app")
+BREVO_FROM_NAME: str = os.getenv("BREVO_FROM_NAME", "OpenTalk")
 
 
 def send_otp_email(to_email: str, otp: str) -> bool:
     """
-    Brevo API se OTP email bhejta hai (SMTP nahi use karta)
-    Returns True on success, False on failure
+    Brevo API se OTP email bhejta hai.
+    Returns True on success, False on failure.
+    Bahut saare edge cases aur logging handle kiye gaye hain.
     """
+
+    # ── 1. Basic Validation ──
+    if not BREVO_API_KEY:
+        logger.error("❌ BREVO_API_KEY environment variable is missing or empty!")
+        logger.error("Render Dashboard → Environment mein BREVO_API_KEY add karo aur Redeploy karo.")
+        return False
+
+    if not to_email or "@" not in to_email:
+        logger.error(f"❌ Invalid email address: {to_email}")
+        return False
+
+    if not otp or len(otp) != 6:
+        logger.error(f"❌ Invalid OTP: {otp}")
+        return False
 
     subject = f"{otp} — Aapka OpenTalk Login OTP"
 
@@ -61,7 +78,7 @@ def send_otp_email(to_email: str, otp: str) -> bool:
           </p>
         </div>
         <div class="footer">
-          © 2025 OpenTalk &nbsp;•&nbsp; Made with ❤️ in India
+          © 2026 OpenTalk • Made with ❤️ in India
         </div>
       </div>
     </body>
@@ -78,7 +95,7 @@ def send_otp_email(to_email: str, otp: str) -> bool:
         "content-type": "application/json"
     }
 
-    data = {
+    payload = {
         "sender": {
             "name": BREVO_FROM_NAME,
             "email": BREVO_FROM_EMAIL
@@ -92,15 +109,39 @@ def send_otp_email(to_email: str, otp: str) -> bool:
     }
 
     try:
-        response = requests.post(url, json=data, headers=headers, timeout=20)
+        logger.info(f"📧 Sending OTP email to {to_email} via Brevo...")
+
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
 
         if response.status_code == 201:
-            logger.info(f"[Brevo API] OTP email sent to {to_email}")
+            logger.info(f"✅ OTP email successfully sent to {to_email}")
             return True
+
         else:
-            logger.error(f"[Brevo API] Error: {response.status_code} - {response.text}")
+            # Common Brevo errors
+            error_msg = response.text[:500]
+            logger.error(f"❌ Brevo API Error: Status={response.status_code} | Response={error_msg}")
+
+            if response.status_code == 401:
+                logger.error("   → API Key galat hai ya 'not verified'. Brevo dashboard check karo.")
+            elif response.status_code == 400:
+                logger.error("   → Bad Request – payload mein kuch galat hai (sender email etc.)")
+            elif response.status_code == 429:
+                logger.error("   → Rate limit hit. Thoda wait karo.")
+
             return False
 
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Timeout while sending email to {to_email}")
+        return False
+    except requests.exceptions.ConnectionError:
+        logger.error(f"❌ Network connection error to Brevo API")
+        return False
     except Exception as e:
-        logger.error(f"[Brevo API] Exception: {e}")
+        logger.error(f"❌ Unexpected exception in send_otp_email: {str(e)}", exc_info=True)
         return False
