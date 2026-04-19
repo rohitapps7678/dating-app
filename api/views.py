@@ -89,15 +89,6 @@ class InterestSuggestionsView(APIView):
 # ─────────────────────────────────────────
 
 class EmailOtpSendView(APIView):
-    """
-    POST /api/auth/email-otp/send/
-    Body: { "email": "user@example.com" }
-
-    - Generates a 6-digit OTP
-    - Saves it in EmailOTP table (10 min expiry)
-    - Sends via Brevo SMTP relay
-    - Invalidates any previous OTPs for this email
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -105,7 +96,7 @@ class EmailOtpSendView(APIView):
         if not email or "@" not in email:
             return Response({"error": "Valid email required"}, status=400)
 
-        # Rate limit: max 3 OTPs in 10 min
+        # Rate limit
         recent = EmailOTP.objects.filter(
             email=email,
             created_at__gte=timezone.now() - timedelta(minutes=10),
@@ -116,17 +107,27 @@ class EmailOtpSendView(APIView):
                 status=429,
             )
 
-        # Invalidate old unused OTPs for this email
+        # Invalidate old OTPs
         EmailOTP.objects.filter(email=email, is_used=False).update(is_used=True)
 
-        otp = _generate_otp()
+        # 🔥 SPECIAL CASE FOR GOOGLE REVIEW
+        if email == "test@opentalk.com":
+            otp = "123456"
+        else:
+            otp = _generate_otp()
+
         EmailOTP.objects.create(
-            email      = email,
-            otp        = otp,
-            expires_at = timezone.now() + timedelta(minutes=10),
+            email=email,
+            otp=otp,
+            expires_at=timezone.now() + timedelta(minutes=10),
         )
 
-        sent = send_otp_email(email, otp)
+        # 🔥 Skip email sending for test account
+        if email == "test@opentalk.com":
+            sent = True
+        else:
+            sent = send_otp_email(email, otp)
+
         if not sent:
             return Response(
                 {"error": "Email send karne mein problem aayi. Dobara try karo."},
@@ -136,25 +137,37 @@ class EmailOtpSendView(APIView):
         return Response({"message": f"OTP bheja gaya: {email}"})
 
 
-class EmailOtpVerifyView(APIView):
-    """
-    POST /api/auth/email-otp/verify/
-    Body: { "email": "user@example.com", "otp": "123456" }
+# ─────────────────────────────────────────
 
-    - Verifies OTP
-    - Creates user if not exists (auto-register)
-    - Returns JWT tokens
-    """
+
+class EmailOtpVerifyView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         email = request.data.get("email", "").strip().lower()
-        otp   = request.data.get("otp",   "").strip()
+        otp   = request.data.get("otp", "").strip()
 
         if not email or not otp:
             return Response({"error": "email aur otp dono required hain"}, status=400)
 
-        # Find latest valid OTP
+        # 🔥 GOOGLE REVIEW BYPASS
+        if email == "test@opentalk.com" and otp == "123456":
+            user, is_new = User.objects.get_or_create(
+                phone=email,
+                defaults={"is_active": True},
+            )
+            if is_new:
+                user.set_unusable_password()
+                user.save()
+
+            return Response({
+                "tokens": get_tokens(user),
+                "user": UserSerializer(user).data,
+                "profile_complete": hasattr(user, "profile") and user.profile.is_complete,
+                "is_new_user": is_new,
+            })
+
+        # Normal OTP flow
         otp_obj = EmailOTP.objects.filter(
             email=email,
             otp=otp,
@@ -167,11 +180,11 @@ class EmailOtpVerifyView(APIView):
         if not otp_obj.is_valid():
             return Response({"error": "OTP expire ho gaya. Naya OTP maango."}, status=400)
 
-        # Mark OTP as used
+        # Mark used
         otp_obj.is_used = True
         otp_obj.save(update_fields=["is_used"])
 
-        # Get or create user  (email stored in phone field for compatibility)
+        # Get/Create user
         user, is_new = User.objects.get_or_create(
             phone=email,
             defaults={"is_active": True},
@@ -186,10 +199,10 @@ class EmailOtpVerifyView(APIView):
         profile_complete = hasattr(user, "profile") and user.profile.is_complete
 
         return Response({
-            "tokens":           get_tokens(user),
-            "user":             UserSerializer(user).data,
+            "tokens": get_tokens(user),
+            "user": UserSerializer(user).data,
             "profile_complete": profile_complete,
-            "is_new_user":      is_new,
+            "is_new_user": is_new,
         })
 
 
