@@ -16,6 +16,7 @@ from .models import (
 )
 from .serializers import (
     UserSerializer,
+    RegisterSerializer, LoginSerializer,
     ProfileSerializer, NearbyProfileSerializer,
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer,
@@ -208,6 +209,42 @@ class EmailOtpVerifyView(APIView):
             "user": UserSerializer(user).data,
             "profile_complete": profile_complete,
             "is_new_user": is_new,
+        })
+
+
+# ─────────────────────────────────────────
+# AUTH — Username + Password
+# ─────────────────────────────────────────
+
+class RegisterView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        s = RegisterSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        user = s.save()
+
+        return Response({
+            "tokens": get_tokens(user),
+            "user": UserSerializer(user).data,
+            "profile_complete": hasattr(user, "profile") and user.profile.is_complete,
+            "is_new_user": True,
+        }, status=201)
+
+
+class LoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        s = LoginSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        user = s.validated_data["user"]
+
+        return Response({
+            "tokens": get_tokens(user),
+            "user": UserSerializer(user).data,
+            "profile_complete": hasattr(user, "profile") and user.profile.is_complete,
+            "is_new_user": False,
         })
 
 

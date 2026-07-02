@@ -19,34 +19,44 @@ def get_user_from_id(value):
 
 
 # ─────────────────────────────────────────
-# AUTH — Phone + Password (existing)
+# AUTH — Username + Password
 # ─────────────────────────────────────────
+# Note: User.phone is the model's unique USERNAME_FIELD. For username/password
+# accounts we simply store the chosen username in that same column (it already
+# doubles up as the email for Email-OTP accounts) — so a username must not
+# collide with an existing email/username in the system.
 
 class RegisterSerializer(serializers.Serializer):
-    phone    = serializers.CharField(max_length=15)
+    username = serializers.CharField(max_length=30)
     password = serializers.CharField(min_length=6, write_only=True)
 
-    def validate_phone(self, value):
-        value = value.strip()
+    def validate_username(self, value):
+        value = value.strip().lower()
+        if len(value) < 3:
+            raise serializers.ValidationError("Username kam se kam 3 characters ka hona chahiye")
+        if not value.replace("_", "").replace(".", "").isalnum():
+            raise serializers.ValidationError(
+                "Username sirf letters, numbers, '_' aur '.' contain kar sakta hai")
         if User.objects.filter(phone=value).exists():
-            raise serializers.ValidationError("Phone number already registered")
+            raise serializers.ValidationError("Ye username already liya ja chuka hai")
         return value
 
     def create(self, validated_data):
         return User.objects.create_user(
-            phone=validated_data["phone"],
+            phone=validated_data["username"],
             password=validated_data["password"],
         )
 
 
 class LoginSerializer(serializers.Serializer):
-    phone    = serializers.CharField(max_length=15)
+    username = serializers.CharField(max_length=30)
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        user = authenticate(username=data["phone"], password=data["password"])
+        username = data["username"].strip().lower()
+        user = authenticate(username=username, password=data["password"])
         if not user:
-            raise serializers.ValidationError("Invalid phone or password")
+            raise serializers.ValidationError("Galat username ya password")
         if not user.is_active:
             raise serializers.ValidationError("Account is disabled")
         data["user"] = user

@@ -4,6 +4,7 @@ from .views import (
     HealthView,
     InterestsListView, InterestSuggestionsView,
     EmailOtpSendView, EmailOtpVerifyView, LogoutView,
+    RegisterView, LoginView,
     ProfileView, OtherProfileView,
     PhotoUploadView, LiveToggleView,
     SearchView, NearbyUsersView,
@@ -20,6 +21,10 @@ urlpatterns = [
     path("auth/email-otp/verify/", EmailOtpVerifyView.as_view(),    name="email-otp-verify"),
     path("auth/logout/",           LogoutView.as_view(),            name="logout"),
     path("auth/token/refresh/",    TokenRefreshView.as_view(),      name="token-refresh"),
+
+    # ── AUTH (Username + Password) ──
+    path("auth/register/",         RegisterView.as_view(),          name="register"),
+    path("auth/login/",            LoginView.as_view(),             name="login"),
 
     # ── PROFILE ──
     path("profile/",               ProfileView.as_view(),           name="my-profile"),
