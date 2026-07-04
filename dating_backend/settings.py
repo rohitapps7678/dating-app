@@ -114,11 +114,21 @@ CHANNEL_LAYERS = {
 }
 
 # ── CORS ──
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOWED_ORIGINS   = (
-    os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if not DEBUG else []
-)
-CORS_ALLOW_HEADERS = ["authorization", "content-type", "accept"]
+# ── CORS ──
+
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+CORS_ALLOW_HEADERS = [
+    "authorization",
+    "content-type",
+    "accept",
+]
 
 # ── CLOUDINARY ✅ ──
 cloudinary.config(
