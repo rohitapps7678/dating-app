@@ -113,16 +113,16 @@ CHANNEL_LAYERS = {
     },
 }
 
-# ── CORS ──
-# ── CORS ──
+# ---------------- CORS ----------------
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG
-
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
-    if origin.strip()
-]
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "https://dating-app-45za.onrender.com",
+    ]
 
 CORS_ALLOW_HEADERS = [
     "authorization",
