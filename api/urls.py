@@ -9,7 +9,7 @@ from .views import (
     PhotoUploadView, LiveToggleView,
     SearchView, NearbyUsersView,
     LikeView, MatchListView,
-    ConversationListView, MessageListView,
+    ConversationListView, MessageListView, StartConversationView,
     BlockView, ReportView,
 )
 
@@ -46,6 +46,7 @@ urlpatterns = [
 
     # ── CHAT ──
     path("conversations/",         ConversationListView.as_view(),  name="conversation-list"),
+    path("conversations/start/",   StartConversationView.as_view(), name="start-conversation"),
     path("conversations/<int:conv_id>/messages/", MessageListView.as_view(), name="message-list"),
 
     # ── BLOCK / REPORT ──

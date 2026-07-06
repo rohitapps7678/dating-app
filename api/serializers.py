@@ -346,8 +346,21 @@ class ConversationSerializer(serializers.ModelSerializer):
             return {"id": str(other.id)}
 
     def get_last_message(self, obj):
-        msg = obj.messages.order_by("-created_at").first()
-        return MessageSerializer(msg).data if msg else None
+        # ✅ Ye values ab view mein annotate() se already attached hain
+        #    (Subquery), isliye yahan koi extra DB query nahi lagti.
+        msg_id = getattr(obj, "last_message_id", None)
+        if not msg_id:
+            # fallback (agar kabhi annotate ke bina call ho)
+            msg = obj.messages.order_by("-created_at").first()
+            return MessageSerializer(msg).data if msg else None
+
+        return {
+            "id":         msg_id,
+            "sender_id":  str(obj.last_message_sender_id),
+            "text":       obj.last_message_text,
+            "is_read":    obj.last_message_is_read,
+            "created_at": obj.last_message_created_at,
+        }
 
 
 # ─────────────────────────────────────────

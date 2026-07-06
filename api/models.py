@@ -104,12 +104,19 @@ class Profile(models.Model):
     )
     has_room    = models.BooleanField(null=True, blank=True)
 
-    latitude    = models.FloatField(null=True, blank=True)
-    longitude   = models.FloatField(null=True, blank=True)
+    latitude    = models.FloatField(null=True, blank=True, db_index=True)
+    longitude   = models.FloatField(null=True, blank=True, db_index=True)
     is_complete = models.BooleanField(default=False)
-    is_live     = models.BooleanField(default=False)
+    is_live     = models.BooleanField(default=False, db_index=True)
     live_since  = models.DateTimeField(null=True, blank=True)
     updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # ✅ "nearby" query hamesha is_live=True + lat/lng range filter karta
+        # hai — composite index se ye query kaafi fast ho jaati hai.
+        indexes = [
+            models.Index(fields=["is_live", "latitude", "longitude"]),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.user.phone})"
@@ -147,15 +154,19 @@ class Like(models.Model):
 class Match(models.Model):
     user1      = models.ForeignKey(User, on_delete=models.CASCADE, related_name="matches_as_user1")
     user2      = models.ForeignKey(User, on_delete=models.CASCADE, related_name="matches_as_user2")
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         unique_together = ("user1", "user2")
+        indexes = [models.Index(fields=["-created_at"])]
 
 
 class Conversation(models.Model):
     match      = models.OneToOneField(Match, on_delete=models.CASCADE, related_name="conversation")
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["-created_at"])]
 
 
 class Message(models.Model):
@@ -163,10 +174,13 @@ class Message(models.Model):
     sender       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="messages_sent")
     text         = models.TextField()
     is_read      = models.BooleanField(default=False)
-    created_at   = models.DateTimeField(auto_now_add=True)
+    created_at   = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ["created_at"]
+        # ✅ "last message per conversation" subquery ab isi index ko use
+        # karegi — bina index ke ye badi tables pe slow ho jaata.
+        indexes = [models.Index(fields=["conversation", "-created_at"])]
 
 
 class Block(models.Model):

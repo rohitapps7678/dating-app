@@ -2,8 +2,9 @@ from rest_framework import status, generics, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
 from datetime import timedelta
 import random
@@ -21,6 +22,7 @@ from .serializers import (
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer,
     BlockSerializer, ReportSerializer,
+    get_user_from_id,
 )
 from .utils import get_nearby_users, get_interest_suggestions
 from .brevo_email import send_otp_email
@@ -36,6 +38,13 @@ def get_tokens(user):
 
 def _generate_otp():
     return str(random.randint(100000, 999999))
+
+
+class FastPagination(PageNumberPagination):
+    """Chhote pages = fast response. Query string: ?page=2&page_size=10"""
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 50
 
 
 # ─────────────────────────────────────────
@@ -371,7 +380,7 @@ class SearchView(APIView):
         blocked_ids = list(Block.objects.filter(
             blocker=request.user).values_list("blocked_id", flat=True))
 
-        qs = Profile.objects.filter(
+        qs = Profile.objects.select_related("user").filter(
             user__is_active=True, is_complete=True,
         ).exclude(user=request.user).exclude(
             user__id__in=blocked_ids
@@ -463,15 +472,63 @@ class LikeView(APIView):
         return Response(response_data, status=201)
 
 
+# ─────────────────────────────────────────
+# START CONVERSATION — bina match/like ke kisi ko bhi message karo
+# ─────────────────────────────────────────
+
+class StartConversationView(APIView):
+    """
+    POST { "user_id": "<id>" } → get-or-create a conversation with that
+    user, even if there's no mutual like/match. Reuses the existing
+    Match/Conversation tables (Match ab sirf "do users ke beech connection"
+    ka record hai, mutual-like hona zaroori nahi raha).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        other_id = request.data.get("user_id") or request.data.get("receiver_id")
+        if not other_id:
+            return Response({"error": "user_id required"}, status=400)
+
+        other = get_user_from_id(other_id)
+
+        if other == request.user:
+            return Response({"error": "Apne aap ko message nahi kar sakte"}, status=400)
+        if not other.is_active:
+            return Response({"error": "User not found"}, status=404)
+
+        # Block check (dono taraf)
+        if Block.objects.filter(
+            Q(blocker=request.user, blocked=other) |
+            Q(blocker=other, blocked=request.user)
+        ).exists():
+            return Response({"error": "Cannot message this user"}, status=403)
+
+        u1, u2 = sorted([request.user, other], key=lambda u: str(u.id))
+        match, _      = Match.objects.get_or_create(user1=u1, user2=u2)
+        conversation, _ = Conversation.objects.get_or_create(match=match)
+
+        return Response({"conversation_id": conversation.id}, status=200)
+
+
 class MatchListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class   = MatchSerializer
+    pagination_class    = FastPagination
 
     def get_queryset(self):
         user = self.request.user
+        # ✅ Single query with OR instead of two queries combined in Python
+        # ✅ select_related pulls user1/user2 + their profiles + conversation
+        #    in the SAME query — no extra query per row (fixes N+1)
         return (
-            Match.objects.filter(user1=user) | Match.objects.filter(user2=user)
-        ).order_by("-created_at")
+            Match.objects
+            .filter(Q(user1=user) | Q(user2=user))
+            .select_related(
+                "user1__profile", "user2__profile", "conversation",
+            )
+            .order_by("-created_at")
+        )
 
     def get_serializer_context(self):
         return {"request": self.request}
@@ -484,13 +541,33 @@ class MatchListView(generics.ListAPIView):
 class ConversationListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class   = ConversationSerializer
+    pagination_class    = FastPagination
 
     def get_queryset(self):
         user = self.request.user
-        return (
-            Conversation.objects.filter(match__user1=user) |
-            Conversation.objects.filter(match__user2=user)
+
+        # ✅ Last message ab ek Subquery se aata hai (annotate) —
+        #    pehle har conversation ke liye ALAG query lagti thi (N+1),
+        #    ab sab ek hi query mein aa jaata hai.
+        last_msg = Message.objects.filter(
+            conversation=OuterRef("pk")
         ).order_by("-created_at")
+
+        return (
+            Conversation.objects
+            .filter(Q(match__user1=user) | Q(match__user2=user))
+            .select_related(
+                "match__user1__profile", "match__user2__profile",
+            )
+            .annotate(
+                last_message_text       = Subquery(last_msg.values("text")[:1]),
+                last_message_created_at = Subquery(last_msg.values("created_at")[:1]),
+                last_message_sender_id  = Subquery(last_msg.values("sender_id")[:1]),
+                last_message_is_read    = Subquery(last_msg.values("is_read")[:1]),
+                last_message_id         = Subquery(last_msg.values("id")[:1]),
+            )
+            .order_by("-created_at")
+        )
 
     def get_serializer_context(self):
         return {"request": self.request}
@@ -511,8 +588,13 @@ class MessageListView(APIView):
     def get(self, request, conv_id):
         conv, err = self._get_conv(request, conv_id)
         if err: return err
-        msgs = conv.messages.order_by("created_at")
-        msgs.filter(is_read=False).exclude(sender=request.user).update(is_read=True)
+        # ✅ select_related sender so serializer doesn't hit DB per message
+        msgs = list(conv.messages.select_related("sender").order_by("created_at"))
+        # Mark unread as read in one UPDATE query using already-known ids
+        # (pehle wala queryset do baar evaluate hota tha — DB pe 2x load)
+        unread_ids = [m.id for m in msgs if not m.is_read and m.sender_id != request.user.id]
+        if unread_ids:
+            Message.objects.filter(id__in=unread_ids).update(is_read=True)
         return Response(MessageSerializer(msgs, many=True).data)
 
     def post(self, request, conv_id):
