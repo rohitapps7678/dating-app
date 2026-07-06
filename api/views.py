@@ -1,4 +1,4 @@
-from rest_framework import status, generics, permissions
+from rest_framework import status, generics, permissions, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -340,10 +340,21 @@ class OtherProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, user_id):
+        # ✅ FIX: get_user_from_id dono handle karta hai —
+        # Profile.id (int, jo Nearby/Match serializers bhejte hain)
+        # aur User.id (UUID) dono. Pehle sirf user__id=user_id se
+        # direct lookup hoti thi, jo Profile.id ke liye fail ho jaati
+        # thi aur "Profile not found" 404 aata tha.
         try:
-            profile = Profile.objects.select_related("user").get(user__id=user_id)
+            user = get_user_from_id(user_id)
+        except serializers.ValidationError:
+            return Response({"error": "Profile not found"}, status=404)
+
+        try:
+            profile = user.profile
         except Profile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
+
         return Response(ProfileSerializer(profile, context={"request": request}).data)
 
 
