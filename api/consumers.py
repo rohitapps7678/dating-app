@@ -1,9 +1,12 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
 
 from .models import Conversation, Message, User, Block
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────
@@ -47,7 +50,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
         # Online status broadcast karo
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.room_name,
             {
                 "type":    "user_status",
@@ -59,7 +62,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if hasattr(self, "room_name"):
             # Offline status broadcast karo
-            await self.channel_layer.group_send(
+            await self._safe_group_send(
                 self.room_name,
                 {
                     "type":    "user_status",
@@ -67,7 +70,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "status":  "offline",
                 }
             )
-            await self.channel_layer.group_discard(self.room_name, self.channel_name)
+            try:
+                await self.channel_layer.group_discard(self.room_name, self.channel_name)
+            except Exception:
+                logger.exception("group_discard failed on disconnect (conv_id=%s)", getattr(self, "conv_id", "?"))
 
     async def receive(self, text_data):
         """Flutter se message aata hai yahan"""
@@ -79,23 +85,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         msg_type = data.get("type", "message")
 
-        if msg_type == "message":
-            await self.handle_message(data)
+        try:
+            if msg_type == "message":
+                await self.handle_message(data)
 
-        elif msg_type == "typing":
-            await self.handle_typing(data)
+            elif msg_type == "typing":
+                await self.handle_typing(data)
 
-        elif msg_type == "read":
-            await self.handle_read(data)
+            elif msg_type == "read":
+                await self.handle_read(data)
 
-        elif msg_type == "ping":
-            # ✅ Heartbeat — client har 10s mein ye bhejta hai taaki proxy/
-            # load-balancer connection ko idle samajh ke drop na kare.
-            # Koi DB/broadcast kaam nahi, bas turant pong wapas bhejo.
-            await self.send(text_data=json.dumps({"type": "pong"}))
+            elif msg_type == "ping":
+                # ✅ Heartbeat — client har 10s mein ye bhejta hai taaki proxy/
+                # load-balancer connection ko idle samajh ke drop na kare.
+                # Koi DB/broadcast kaam nahi, bas turant pong wapas bhejo.
+                await self.send(text_data=json.dumps({"type": "pong"}))
 
-        else:
-            await self.send_error(f"Unknown type: {msg_type}")
+            else:
+                await self.send_error(f"Unknown type: {msg_type}")
+
+        except Exception:
+            # ✅ CRITICAL FIX: pehle agar handle_message/handle_read waghera
+            # ke andar kahin exception aata tha (e.g. Redis/channel-layer
+            # down, DB error), toh poora consumer crash ho jaata tha aur
+            # WebSocket "code 1006" se abruptly band ho jaata — client ko
+            # pata bhi nahi chalta tha kyun, aur reconnect loop chalta
+            # rehta tha. Ab exception yahin pakdi jaati hai: server-side
+            # log mein poora traceback jaata hai (Render logs mein dikhega)
+            # aur connection zinda rehta hai — client ko bas ek "error"
+            # frame milta hai, poora socket nahi tootta.
+            logger.exception(
+                "Unhandled error while processing '%s' on conv_id=%s",
+                msg_type, getattr(self, "conv_id", "?"),
+            )
+            await self.send_error("Something went wrong — please try again")
 
     # ─────────────────────────────────────
     # HANDLERS
@@ -122,7 +145,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         message = await self.save_message(self.conversation, self.user, text)
 
         # Dono users ko broadcast karo
-        await self.channel_layer.group_send(
+        sent = await self._safe_group_send(
             self.room_name,
             {
                 "type":       "chat_message",
@@ -133,10 +156,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "client_id":  client_id,
             }
         )
+        if not sent:
+            # ✅ Message DB mein save ho chuka hai (isliye refresh/REST pe
+            # dikhega), lekin live broadcast fail hua — sender ko turant
+            # bata do (client_id ke saath) taaki UI turant "failed, tap to
+            # retry" dikhaye, 8 second ke timeout ka intezaar na kare.
+            await self.send_error(
+                "Message saved but couldn't deliver live — pull to refresh",
+                client_id=client_id,
+            )
 
     async def handle_typing(self, data):
         """Typing indicator — DB mein save nahi hota"""
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.room_name,
             {
                 "type":      "typing_indicator",
@@ -148,7 +180,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def handle_read(self, data):
         """Messages read acknowledge karo"""
         await self.mark_messages_read(self.conversation, self.user)
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.room_name,
             {
                 "type":    "messages_read",
@@ -202,11 +234,31 @@ class ChatConsumer(AsyncWebsocketConsumer):
     # HELPERS
     # ─────────────────────────────────────
 
-    async def send_error(self, message):
+    async def send_error(self, message, **extra):
         await self.send(text_data=json.dumps({
             "type":  "error",
             "error": message,
+            **extra,
         }))
+
+    async def _safe_group_send(self, group, payload) -> bool:
+        """
+        channel_layer.group_send() ka safe wrapper. Agar Redis/channel-layer
+        down ho ya koi bhi network error aaye, exception yahin pakdi jaati
+        hai — poora consumer crash nahi hota, connection zinda rehta hai.
+        Returns True on success, False on failure (caller decide kare kya
+        karna hai — e.g. sender ko "delivery failed" batana).
+        """
+        try:
+            await self.channel_layer.group_send(group, payload)
+            return True
+        except Exception:
+            logger.exception(
+                "group_send failed for group=%s type=%s (conv_id=%s) — "
+                "check Redis/channel-layer connectivity",
+                group, payload.get("type"), getattr(self, "conv_id", "?"),
+            )
+            return False
 
     # ─────────────────────────────────────
     # DB OPERATIONS (sync → async)
