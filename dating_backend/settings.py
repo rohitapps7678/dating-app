@@ -101,7 +101,7 @@ SIMPLE_JWT = {
 }
 
 # ── CHANNELS ──
-# ✅ FIX: pehle REDIS_HOST/REDIS_PORT alag-alag the (default "127.0.0.1")
+# ✅ FIX #1: pehle REDIS_HOST/REDIS_PORT alag-alag the (default "127.0.0.1")
 # — production mein "localhost" ka koi Redis nahi hota (Render pe har
 # service apne alag container mein hai), aur agar Redis password-protected
 # ho toh alag host/port tuple format password embed nahi kar sakta.
@@ -109,11 +109,30 @@ SIMPLE_JWT = {
 # copy-paste karke daal do, chahe usme password ho ya na ho, dono chalega.
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 
+# ✅ FIX #2 (asli crash ki wajah): channels_redis background mein hamesha
+# ek lambi "blocking read" (BRPOP) karta rehta hai naye messages ke liye
+# wait karte hue. redis-py ke async client mein ek known bug/behaviour hai
+# jahan `socket_timeout` in lambi blocking reads pe bhi apply ho jaata hai
+# — is wajah se bilkul theek connection bhi beech mein
+# "TimeoutError: Timeout reading from ..." maar deta tha, aur Channels
+# poore WebSocket consumer ko crash kar deta tha (isi wajah se baar-baar
+# reconnect ho raha tha).
+# `socket_timeout: None` iss read-timeout ko poori tarah disable kar deta
+# hai (sirf isi channel-layer connection ke liye, baaki app pe asar nahi),
+# aur `retry_on_timeout` + `health_check_interval` connection ko surakshit
+# banate hain agar network mein genuinely koi hiccup ho.
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [REDIS_URL],
+            "hosts": [{
+                "address":               REDIS_URL,
+                "socket_timeout":        None,
+                "socket_connect_timeout": 5,
+                "socket_keepalive":      True,
+                "retry_on_timeout":      True,
+                "health_check_interval": 30,
+            }],
         },
     },
 }
