@@ -88,6 +88,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         elif msg_type == "read":
             await self.handle_read(data)
 
+        elif msg_type == "ping":
+            # ✅ Heartbeat — client har 10s mein ye bhejta hai taaki proxy/
+            # load-balancer connection ko idle samajh ke drop na kare.
+            # Koi DB/broadcast kaam nahi, bas turant pong wapas bhejo.
+            await self.send(text_data=json.dumps({"type": "pong"}))
+
         else:
             await self.send_error(f"Unknown type: {msg_type}")
 
