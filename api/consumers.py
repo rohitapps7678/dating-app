@@ -97,6 +97,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def handle_message(self, data):
         text = data.get("text", "").strip()
+        # ✅ client_id: Flutter side jo optimistic (turant dikhaya gaya)
+        # message banata hai uska local ID — hum bas echo karte hain taaki
+        # client apne "sending..." message ko is confirmed message se
+        # replace kar sake (WhatsApp jaisa: turant dikhta hai, phir tick).
+        client_id = data.get("client_id")
         if not text:
             await self.send_error("Empty message")
             return
@@ -119,6 +124,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "sender_id":  str(self.user.id),
                 "text":       text,
                 "created_at": message.created_at.isoformat(),
+                "client_id":  client_id,
             }
         )
 
@@ -157,6 +163,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "sender_id":  event["sender_id"],
             "text":       event["text"],
             "created_at": event["created_at"],
+            "client_id":  event.get("client_id"),
         }))
 
     async def typing_indicator(self, event):
