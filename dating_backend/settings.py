@@ -101,14 +101,19 @@ SIMPLE_JWT = {
 }
 
 # ── CHANNELS ──
+# ✅ FIX: pehle REDIS_HOST/REDIS_PORT alag-alag the (default "127.0.0.1")
+# — production mein "localhost" ka koi Redis nahi hota (Render pe har
+# service apne alag container mein hai), aur agar Redis password-protected
+# ho toh alag host/port tuple format password embed nahi kar sakta.
+# Ab ek hi REDIS_URL env var use karo — Render ka "Internal Redis URL"
+# copy-paste karke daal do, chahe usme password ho ya na ho, dono chalega.
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [(
-                os.getenv("REDIS_HOST", "127.0.0.1"),
-                int(os.getenv("REDIS_PORT", 6379))
-            )],
+            "hosts": [REDIS_URL],
         },
     },
 }
