@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _initialized = False
-PROJECT_ID = "opentalk-53d08"
+PROJECT_ID = "open-talk-e0be1"
 
 
 def _init_firebase():
