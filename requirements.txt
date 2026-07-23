@@ -8,6 +8,7 @@ python-dotenv>=1.0
 Pillow>=10.0
 psycopg2-binary>=2.9
 cloudinary>=1.36.0
+razorpay
 dj-database-url>=2.0
 gunicorn>=21.2
 daphne==4.1.2

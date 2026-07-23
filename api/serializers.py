@@ -3,7 +3,8 @@ from django.contrib.auth import authenticate
 
 from .models import (
     User, Profile, Like, Match, Conversation,
-    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES
+    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
+    Subscription, PLAN_CONFIG,
 )
 
 
@@ -413,3 +414,67 @@ class ReportSerializer(serializers.ModelSerializer):
             reported=reported,
             **validated_data
         )
+
+
+# ─────────────────────────────────────────
+# SUBSCRIPTION  (Razorpay)
+# ─────────────────────────────────────────
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    plan_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Subscription
+        fields = [
+            "id", "plan", "plan_label", "amount", "currency",
+            "status", "is_trial", "starts_at", "expires_at", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_plan_label(self, obj):
+        return PLAN_CONFIG.get(obj.plan, {}).get("label", obj.plan)
+
+
+class CreateSubscriptionOrderSerializer(serializers.Serializer):
+    plan = serializers.ChoiceField(choices=list(PLAN_CONFIG.keys()))
+
+
+class VerifySubscriptionPaymentSerializer(serializers.Serializer):
+    """
+    Frontend Razorpay checkout success ke baad ye teeno fields deta hai.
+    Signature verify karke hi subscription 'paid' mark hoti hai — kabhi
+    bhi client se aaye 'success' flag pe bharosa nahi karte.
+    """
+    razorpay_order_id   = serializers.CharField()
+    razorpay_payment_id = serializers.CharField()
+    razorpay_signature  = serializers.CharField()
+
+    def validate(self, data):
+        subscription = Subscription.objects.filter(
+            razorpay_order_id=data["razorpay_order_id"]
+        ).first()
+        if not subscription:
+            raise serializers.ValidationError("Order not found")
+
+        request = self.context["request"]
+        if subscription.user != request.user:
+            raise serializers.ValidationError("Not allowed")
+
+        # Idempotent — agar webhook ne already mark_paid kar diya ho
+        if subscription.status == "paid":
+            data["subscription"] = subscription
+            return data
+
+        from .razorpay_client import verify_payment_signature
+        valid = verify_payment_signature(
+            data["razorpay_order_id"],
+            data["razorpay_payment_id"],
+            data["razorpay_signature"],
+        )
+        if not valid:
+            subscription.status = "failed"
+            subscription.save(update_fields=["status", "updated_at"])
+            raise serializers.ValidationError("Payment verification failed")
+
+        data["subscription"] = subscription
+        return data

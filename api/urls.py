@@ -3,7 +3,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     HealthView,
     InterestsListView, InterestSuggestionsView,
-    EmailOtpSendView, EmailOtpVerifyView, LogoutView,
+    FirebaseAuthView, LogoutView,
     RegisterView, LoginView,
     ProfileView, OtherProfileView,
     PhotoUploadView, LiveToggleView,
@@ -11,14 +11,16 @@ from .views import (
     LikeView, MatchListView,
     ConversationListView, MessageListView, StartConversationView,
     BlockView, ReportView,
+    SubscriptionPlansView, SubscriptionStatusView,
+    CreateSubscriptionOrderView, VerifySubscriptionPaymentView,
+    RazorpayWebhookView, ClaimFreeTrialView,
 )
 
 urlpatterns = [
     path("health/",                HealthView.as_view(),            name="health"),
 
-    # ── AUTH (Email OTP via Brevo) ──
-    path("auth/email-otp/send/",   EmailOtpSendView.as_view(),      name="email-otp-send"),
-    path("auth/email-otp/verify/", EmailOtpVerifyView.as_view(),    name="email-otp-verify"),
+    # ── AUTH (Phone OTP via Firebase) ──
+    path("auth/firebase/",         FirebaseAuthView.as_view(),      name="firebase-auth"),
     path("auth/logout/",           LogoutView.as_view(),            name="logout"),
     path("auth/token/refresh/",    TokenRefreshView.as_view(),      name="token-refresh"),
 
@@ -53,4 +55,12 @@ urlpatterns = [
     path("block/",                 BlockView.as_view(),             name="block"),
     path("block/<str:user_id>/",   BlockView.as_view(),             name="unblock"),
     path("report/",                ReportView.as_view(),            name="report"),
+
+    # ── SUBSCRIPTION / RAZORPAY ──
+    path("subscriptions/plans/",        SubscriptionPlansView.as_view(),         name="subscription-plans"),
+    path("subscriptions/status/",       SubscriptionStatusView.as_view(),        name="subscription-status"),
+    path("subscriptions/create-order/", CreateSubscriptionOrderView.as_view(),   name="subscription-create-order"),
+    path("subscriptions/verify/",       VerifySubscriptionPaymentView.as_view(), name="subscription-verify"),
+    path("subscriptions/claim-trial/",  ClaimFreeTrialView.as_view(),            name="subscription-claim-trial"),
+    path("subscriptions/webhook/",      RazorpayWebhookView.as_view(),           name="subscription-webhook"),
 ]

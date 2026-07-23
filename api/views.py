@@ -6,26 +6,30 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
+from django.conf import settings
 from datetime import timedelta
-import random
 import cloudinary, cloudinary.uploader
 
 from .models import (
-    User, Profile, EmailOTP,
+    User, Profile,
     Like, Match, Conversation,
-    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES
+    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
+    Subscription, PLAN_CONFIG, PLAN_FEATURES, FREE_TRIAL_DAYS,
 )
 from .serializers import (
     UserSerializer,
     RegisterSerializer, LoginSerializer,
+    FirebaseAuthSerializer,
     ProfileSerializer, NearbyProfileSerializer,
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer,
     BlockSerializer, ReportSerializer,
+    SubscriptionSerializer, CreateSubscriptionOrderSerializer,
+    VerifySubscriptionPaymentSerializer,
     get_user_from_id,
 )
 from .utils import get_nearby_users, get_interest_suggestions
-from .brevo_email import send_otp_email
+from .razorpay_client import create_order, verify_webhook_signature
 
 
 # ─────────────────────────────────────────
@@ -35,10 +39,6 @@ from .brevo_email import send_otp_email
 def get_tokens(user):
     refresh = RefreshToken.for_user(user)
     return {"refresh": str(refresh), "access": str(refresh.access_token)}
-
-def _generate_otp():
-    return str(random.randint(100000, 999999))
-
 
 class FastPagination(PageNumberPagination):
     """Chhote pages = fast response. Query string: ?page=2&page_size=10"""
@@ -100,113 +100,22 @@ class InterestSuggestionsView(APIView):
 
 
 # ─────────────────────────────────────────
-# AUTH — Email OTP via Brevo
+# AUTH — Phone OTP via Firebase
 # ─────────────────────────────────────────
+# Flutter app khud Firebase se OTP bhejta/verify karta hai (FirebaseAuth
+# .verifyPhoneNumber + signInWithCredential). Uske baad Flutter yahan
+# sirf Firebase ka ID token bhejta hai — hum usse verify karke apna JWT
+# issue karte hain. Isliye ek hi endpoint kaafi hai (koi "send otp" /
+# "verify otp" split backend mein nahi hai, wo kaam Firebase SDK khud
+# app ke andar karta hai).
 
-class EmailOtpSendView(APIView):
+class FirebaseAuthView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        email = request.data.get("email", "").strip().lower()
-        if not email or "@" not in email:
-            return Response({"error": "Valid email required"}, status=400)
-
-        # Rate limit
-        recent = EmailOTP.objects.filter(
-            email=email,
-            created_at__gte=timezone.now() - timedelta(minutes=10),
-        ).count()
-        if recent >= 3:
-            return Response(
-                {"error": "Bahut zyada OTP requests. 10 minute baad try karo."},
-                status=429,
-            )
-
-        # Invalidate old OTPs
-        EmailOTP.objects.filter(email=email, is_used=False).update(is_used=True)
-
-        # 🔥 SPECIAL CASE FOR GOOGLE REVIEW
-        if email == "test@opentalk.com":
-            otp = "123456"
-        else:
-            otp = _generate_otp()
-
-        EmailOTP.objects.create(
-            email=email,
-            otp=otp,
-            expires_at=timezone.now() + timedelta(minutes=10),
-        )
-
-        # 🔥 Skip email sending for test account
-        if email == "test@opentalk.com":
-            sent = True
-        else:
-            sent = send_otp_email(email, otp)
-
-        if not sent:
-            return Response(
-                {"error": "Email send karne mein problem aayi. Dobara try karo."},
-                status=500,
-            )
-
-        return Response({"message": f"OTP bheja gaya: {email}"})
-
-
-# ─────────────────────────────────────────
-
-
-class EmailOtpVerifyView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        email = request.data.get("email", "").strip().lower()
-        otp   = request.data.get("otp", "").strip()
-
-        if not email or not otp:
-            return Response({"error": "email aur otp dono required hain"}, status=400)
-
-        # 🔥 GOOGLE REVIEW BYPASS
-        if email == "test@opentalk.com" and otp == "123456":
-            user, is_new = User.objects.get_or_create(
-                phone=email,
-                defaults={"is_active": True},
-            )
-            if is_new:
-                user.set_unusable_password()
-                user.save()
-
-            return Response({
-                "tokens": get_tokens(user),
-                "user": UserSerializer(user).data,
-                "profile_complete": hasattr(user, "profile") and user.profile.is_complete,
-                "is_new_user": is_new,
-            })
-
-        # Normal OTP flow
-        otp_obj = EmailOTP.objects.filter(
-            email=email,
-            otp=otp,
-            is_used=False,
-        ).order_by("-created_at").first()
-
-        if not otp_obj:
-            return Response({"error": "Galat OTP. Check karo aur dobara try karo."}, status=400)
-
-        if not otp_obj.is_valid():
-            return Response({"error": "OTP expire ho gaya. Naya OTP maango."}, status=400)
-
-        # Mark used
-        otp_obj.is_used = True
-        otp_obj.save(update_fields=["is_used"])
-
-        # Get/Create user
-        user, is_new = User.objects.get_or_create(
-            phone=email,
-            defaults={"is_active": True},
-        )
-        if is_new:
-            user.set_unusable_password()
-            user.save()
+        s = FirebaseAuthSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        user, is_new = s.get_or_create_user(s.validated_data)
 
         if not user.is_active:
             return Response({"error": "Account disabled hai"}, status=403)
@@ -661,3 +570,175 @@ class ReportView(APIView):
         s.is_valid(raise_exception=True)
         s.save()
         return Response({"message": "Report submitted"}, status=201)
+
+
+# ─────────────────────────────────────────
+# SUBSCRIPTION  (Razorpay)
+# ─────────────────────────────────────────
+
+class SubscriptionPlansView(APIView):
+    """Public — Flutter paywall screen loads this before login-gating anything."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        plans = [
+            {
+                "id":            key,
+                "label":         cfg["label"],
+                "price_inr":     cfg["price_inr"],
+                "duration_days": cfg["duration_days"],
+                "tag":           cfg["tag"],
+                "features":      PLAN_FEATURES,
+            }
+            for key, cfg in PLAN_CONFIG.items()
+        ]
+        return Response({
+            "plans":            plans,
+            "razorpay_key_id":  settings.RAZORPAY_KEY_ID,
+            "free_trial_days":  FREE_TRIAL_DAYS,
+        })
+
+
+class SubscriptionStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        sub = request.user.active_subscription
+        has_used_trial = Subscription.objects.filter(
+            user=request.user, is_trial=True).exists()
+        return Response({
+            "is_premium":     sub is not None,
+            "subscription":   SubscriptionSerializer(sub).data if sub else None,
+            "has_used_trial": has_used_trial,
+        })
+
+
+class ClaimFreeTrialView(APIView):
+    """
+    ₹0, no Razorpay order — activates FREE_TRIAL_DAYS of premium once per
+    user. This is what backs the '1-DAY FREE TRIAL' banner on the paywall.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if Subscription.objects.filter(user=request.user, is_trial=True).exists():
+            return Response({"error": "Free trial already used"}, status=400)
+        if request.user.is_premium:
+            return Response({"error": "Aap already Premium ho"}, status=400)
+
+        now = timezone.now()
+        sub = Subscription.objects.create(
+            user=request.user,
+            plan="week",
+            amount=0,
+            razorpay_order_id=f"trial_{request.user.id}_{int(now.timestamp())}",
+            status="paid",
+            is_trial=True,
+            starts_at=now,
+            expires_at=now + timedelta(days=FREE_TRIAL_DAYS),
+        )
+        return Response({
+            "message":      f"{FREE_TRIAL_DAYS}-day free trial activated!",
+            "subscription": SubscriptionSerializer(sub).data,
+        }, status=201)
+
+
+class CreateSubscriptionOrderView(APIView):
+    """
+    Step 1 of checkout — creates a Razorpay order + a local 'created'
+    Subscription row, and returns everything the Flutter Razorpay SDK
+    needs to open the checkout sheet.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        s = CreateSubscriptionOrderSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        plan = s.validated_data["plan"]
+        cfg  = PLAN_CONFIG[plan]
+        amount_paise = cfg["price_inr"] * 100
+
+        try:
+            order = create_order(
+                amount_paise,
+                receipt=f"sub_{request.user.id}_{int(timezone.now().timestamp())}",
+                notes={"user_id": str(request.user.id), "plan": plan},
+            )
+        except Exception as e:
+            return Response({"error": f"Razorpay order banane mein problem: {e}"}, status=502)
+
+        subscription = Subscription.objects.create(
+            user=request.user,
+            plan=plan,
+            amount=amount_paise,
+            razorpay_order_id=order["id"],
+        )
+
+        email = request.user.phone if "@" in request.user.phone else ""
+        return Response({
+            "order_id":         order["id"],
+            "amount":           amount_paise,
+            "currency":         "INR",
+            "key_id":           settings.RAZORPAY_KEY_ID,
+            "plan":             plan,
+            "subscription_id":  subscription.id,
+            "user_email":       email,
+        }, status=201)
+
+
+class VerifySubscriptionPaymentView(APIView):
+    """
+    Step 2 of checkout — client calls this right after Razorpay's
+    checkout sheet reports success. Signature is verified server-side
+    before the subscription is ever marked 'paid'.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        s = VerifySubscriptionPaymentSerializer(
+            data=request.data, context={"request": request})
+        s.is_valid(raise_exception=True)
+        subscription = s.validated_data["subscription"]
+
+        if subscription.status != "paid":
+            subscription.mark_paid(
+                s.validated_data["razorpay_payment_id"],
+                s.validated_data["razorpay_signature"],
+            )
+
+        return Response({
+            "message":      "Payment verified. Subscription activated!",
+            "subscription": SubscriptionSerializer(subscription).data,
+        })
+
+
+class RazorpayWebhookView(APIView):
+    """
+    Optional but strongly recommended for production: Razorpay calls this
+    directly from its servers, so a payment still gets recorded even if
+    the app crashes/loses network right after checkout (before it could
+    call /verify/). Configure this URL in Razorpay Dashboard → Settings →
+    Webhooks, subscribe to the 'payment.captured' event, and set the same
+    secret as RAZORPAY_WEBHOOK_SECRET in your env.
+    """
+    permission_classes     = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        signature = request.headers.get("X-Razorpay-Signature", "")
+        payload   = request.body.decode("utf-8")
+
+        if not verify_webhook_signature(payload, signature):
+            return Response({"error": "Invalid signature"}, status=400)
+
+        event = request.data.get("event")
+        if event == "payment.captured":
+            payment    = request.data["payload"]["payment"]["entity"]
+            order_id   = payment["order_id"]
+            payment_id = payment["id"]
+
+            sub = Subscription.objects.filter(razorpay_order_id=order_id).first()
+            if sub and sub.status != "paid":
+                sub.mark_paid(payment_id, signature="webhook-verified")
+
+        return Response({"status": "ok"})

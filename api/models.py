@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from django.utils import timezone
+from datetime import timedelta
 import uuid
 
 INTEREST_CHOICES = [
@@ -17,6 +18,34 @@ POSITION_CHOICES = [
     ("vers_bot", "Vers Bottom"),
     ("bottom",   "Bottom"),
 ]
+
+# ─────────────────────────────────────
+# SUBSCRIPTION PLANS  (Razorpay)
+# ─────────────────────────────────────
+# ✅ Prices in whole rupees — converted to paise (x100) wherever Razorpay
+# needs an amount. Change prices/durations here only; everything else
+# (order creation, plan listing API, Flutter screen) reads from this.
+
+PLAN_CHOICES = [
+    ("week",         "1 Week"),
+    ("month",        "1 Month"),
+    ("three_months", "3 Months"),
+]
+
+PLAN_CONFIG = {
+    "week":         {"label": "1 Week",  "price_inr": 49,  "duration_days": 7,  "tag": None},
+    "month":        {"label": "1 Month", "price_inr": 99,  "duration_days": 30, "tag": "MOST POPULAR"},
+    "three_months": {"label": "3 Months","price_inr": 199, "duration_days": 90, "tag": "BEST VALUE"},
+}
+
+PLAN_FEATURES = [
+    "Unlimited Chats",
+    "See Who Likes You",
+    "Profile Boost",
+    "Ad-Free Experience",
+]
+
+FREE_TRIAL_DAYS = 1
 
 
 class UserManager(BaseUserManager):
@@ -50,6 +79,22 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.phone
+
+    # ✅ Premium status — computed from the latest *paid* subscription
+    # that hasn't expired yet. No denormalized boolean to keep in sync;
+    # single indexed query (see Subscription.Meta.indexes).
+    @property
+    def active_subscription(self):
+        return (
+            self.subscriptions
+            .filter(status="paid", expires_at__gt=timezone.now())
+            .order_by("-expires_at")
+            .first()
+        )
+
+    @property
+    def is_premium(self):
+        return self.active_subscription is not None
 
 
 # ─────────────────────────────────────
@@ -204,3 +249,78 @@ class Report(models.Model):
     reason      = models.CharField(max_length=20, choices=REASON_CHOICES)
     description = models.TextField(max_length=500, blank=True)
     created_at  = models.DateTimeField(auto_now_add=True)
+
+
+# ─────────────────────────────────────
+# SUBSCRIPTION  (Razorpay)
+# ─────────────────────────────────────
+
+class Subscription(models.Model):
+    """
+    Ek row = ek Razorpay order attempt.
+    - created  : order Razorpay pe ban gaya, payment pending hai
+    - paid     : signature verify ho gayi, subscription active hai
+    - failed   : payment fail hua ya signature verify nahi hui
+    - cancelled: order abandon ho gaya (app close, user ne cancel kiya)
+    """
+    STATUS_CHOICES = [
+        ("created",   "Created"),
+        ("paid",      "Paid"),
+        ("failed",    "Failed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    user     = models.ForeignKey(User, on_delete=models.CASCADE, related_name="subscriptions")
+    plan     = models.CharField(max_length=20, choices=PLAN_CHOICES)
+    amount   = models.PositiveIntegerField()             # paise
+    currency = models.CharField(max_length=10, default="INR")
+
+    razorpay_order_id   = models.CharField(max_length=100, unique=True)
+    razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)
+    razorpay_signature  = models.CharField(max_length=255, blank=True, null=True)
+
+    status   = models.CharField(max_length=10, choices=STATUS_CHOICES, default="created", db_index=True)
+    is_trial = models.BooleanField(default=False)   # ✅ free 1-day trial, ₹0, no Razorpay order
+
+    starts_at  = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        # ✅ "user ka latest paid, unexpired subscription" query isi index
+        # se serve hoti hai — is_premium check har request pe chal sakta hai.
+        indexes = [models.Index(fields=["user", "-created_at"])]
+
+    def __str__(self):
+        return f"{self.user.phone} — {self.plan} ({self.status})"
+
+    def mark_paid(self, payment_id, signature):
+        """
+        Signature verify ho chuki hai — ab subscription activate karo.
+        Agar user ka koi purana paid plan abhi bhi active hai, naya plan
+        uski expiry ke baad se STACK hota hai (jaldi renew karne pe din
+        waste nahi hote). Warna abhi se start hota hai.
+        """
+        now = timezone.now()
+        existing = (
+            Subscription.objects
+            .filter(user=self.user, status="paid", expires_at__gt=now)
+            .exclude(id=self.id)
+            .order_by("-expires_at")
+            .first()
+        )
+        start    = existing.expires_at if existing else now
+        duration = timedelta(days=PLAN_CONFIG[self.plan]["duration_days"])
+
+        self.razorpay_payment_id = payment_id
+        self.razorpay_signature  = signature
+        self.status     = "paid"
+        self.starts_at  = start
+        self.expires_at = start + duration
+        self.save(update_fields=[
+            "razorpay_payment_id", "razorpay_signature",
+            "status", "starts_at", "expires_at", "updated_at",
+        ])
