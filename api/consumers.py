@@ -221,6 +221,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "user_id": event["user_id"],
             }))
 
+    async def message_deleted(self, event):
+        """
+        REST view (MessageDeleteView) se channel_layer.group_send() ke
+        zariye aata hai jab koi message "delete for everyone" hota hai —
+        yahan se connected clients tak forward ho jaata hai taaki dusre
+        user ki screen turant update ho, refresh ki zaroorat na pade.
+        """
+        await self.send(text_data=json.dumps({
+            "type":       "message_deleted",
+            "id":         event["id"],
+            "scope":      event["scope"],
+            "deleted_by": event["deleted_by"],
+        }))
+
     async def user_status(self, event):
         """Online/offline status Flutter ko bhejo"""
         if str(self.user.id) != event["user_id"]:

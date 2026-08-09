@@ -166,6 +166,33 @@ class Profile(models.Model):
     def __str__(self):
         return f"{self.name} ({self.user.phone})"
 
+    def refresh_is_complete(self):
+        """
+        ✅ BUG FIX: is_complete ka single source of truth. Pehle ye sirf
+        ProfileSerializer.update() ke andar set hota tha — isliye:
+          1. Pehli baar profile create karte waqt (POST → serializer
+             create(), jo ModelSerializer ka default create() use karta
+             tha) is_complete kabhi True nahi banta tha.
+          2. Photo alag se PhotoUploadView se upload hone par bhi
+             is_complete kabhi recalculate nahi hota tha (serializer
+             ke bahar seedha profile.save() ho raha tha).
+        Nateeja: user ek baar profile pura bhar deta tha, phir bhi agli
+        baar login karne par backend "profile_complete": False bhejta
+        rehta tha aur app use dobara profile banane ki screen pe bhej
+        deta tha — hamesha ke liye, kyunki DB mein is_complete kabhi
+        True set hi nahi hota tha.
+        Fix: is method ko HAR jagah call karo jahan bhi profile ke
+        fields change hote hain (create, update, photo upload) — ye
+        current field values se is_complete dobara compute karke sync
+        mein rakhta hai (True bhi ho sakta hai, False bhi — agar koi
+        zaroori field baad mein khaali kar di jaaye).
+        """
+        complete = bool(self.name and self.age and self.gender and self.photo_url)
+        if complete != self.is_complete:
+            self.is_complete = complete
+            self.save(update_fields=["is_complete"])
+        return self.is_complete
+
     def go_live(self):
         self.is_live    = True
         self.live_since = timezone.now()
@@ -214,6 +241,13 @@ class Conversation(models.Model):
         indexes = [models.Index(fields=["-created_at"])]
 
 
+# ✅ "Delete for everyone" sirf sender kar sakta hai, aur sirf itni der
+# tak jab tak message bheja gaya (WhatsApp jaisa). Isse purane messages
+# retroactively delete karke conversation history ko galat tarike se
+# rewrite nahi kiya ja sakta.
+MESSAGE_DELETE_FOR_EVERYONE_WINDOW = timedelta(hours=1)
+
+
 class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
     sender       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="messages_sent")
@@ -221,11 +255,76 @@ class Message(models.Model):
     is_read      = models.BooleanField(default=False)
     created_at   = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    # ── "Delete for everyone" ──
+    # Dono taraf message "This message was deleted" ban jaata hai.
+    # Raw text DB mein rakha jaata hai (moderation/abuse-review ke liye)
+    # lekin serializer isse kabhi kisi user ko wapas nahi bhejta.
+    is_deleted_for_everyone = models.BooleanField(default=False)
+    deleted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="messages_deleted_for_everyone",
+    )
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    # ── "Delete for me" ──
+    # Sirf in users ko ye message dikhna band ho jaata hai — dusra
+    # participant bilkul pehle jaisa dekhta rehta hai.
+    deleted_for = models.ManyToManyField(
+        User, blank=True, related_name="messages_hidden",
+    )
+
     class Meta:
         ordering = ["created_at"]
         # ✅ "last message per conversation" subquery ab isi index ko use
         # karegi — bina index ke ye badi tables pe slow ho jaata.
         indexes = [models.Index(fields=["conversation", "-created_at"])]
+
+    def can_delete_for_everyone(self, user):
+        """Sirf sender, sirf ek chhoti time-window ke andar, aur sirf
+        agar pehle se delete nahi ho chuka."""
+        if self.is_deleted_for_everyone:
+            return False
+        if self.sender_id != user.id:
+            return False
+        return timezone.now() - self.created_at <= MESSAGE_DELETE_FOR_EVERYONE_WINDOW
+
+    def soft_delete_for_everyone(self, user):
+        self.is_deleted_for_everyone = True
+        self.deleted_by  = user
+        self.deleted_at  = timezone.now()
+        self.save(update_fields=["is_deleted_for_everyone", "deleted_by", "deleted_at"])
+
+
+class ConversationUserState(models.Model):
+    """
+    Per-user state for a conversation. Conversation row khud kabhi delete
+    nahi hoti (dusre participant ka data hamesha safe rehta hai) — ye
+    table bas ye track karti hai ki EK user ke liye chat kaisi dikhni
+    chahiye:
+
+    - cleared_at : "Clear chat" — is timestamp se PEHLE ke saare messages
+                   is user ko nahi dikhte. Dusra user unaffected rehta hai.
+    - is_hidden  : "Delete chat" — conversation list se hata do. Agar
+                   dusra user naya message bhejta hai, apne aap wapas
+                   dikhne lagti hai (WhatsApp jaisa behavior).
+    """
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="user_states")
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="conversation_states")
+
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    is_hidden  = models.BooleanField(default=False)
+    hidden_at  = models.DateTimeField(null=True, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("conversation", "user")
+        indexes = [models.Index(fields=["user", "is_hidden"])]
+
+    def __str__(self):
+        return f"{self.user.phone} — conv#{self.conversation_id}"
 
 
 class Block(models.Model):

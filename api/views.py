@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import status, generics, permissions, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,11 +12,15 @@ from django.conf import settings
 from datetime import timedelta
 import cloudinary, cloudinary.uploader
 
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
 from .models import (
     User, Profile,
     Like, Match, Conversation,
     Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
     Subscription, PLAN_CONFIG, PLAN_FEATURES, FREE_TRIAL_DAYS,
+    ConversationUserState,
 )
 from .serializers import (
     UserSerializer,
@@ -22,7 +28,7 @@ from .serializers import (
     FirebaseAuthSerializer,
     ProfileSerializer, NearbyProfileSerializer,
     LikeSerializer, MatchSerializer,
-    ConversationSerializer, MessageSerializer,
+    ConversationSerializer, MessageSerializer, DeleteMessageSerializer,
     BlockSerializer, ReportSerializer,
     SubscriptionSerializer, CreateSubscriptionOrderSerializer,
     VerifySubscriptionPaymentSerializer,
@@ -30,6 +36,43 @@ from .serializers import (
 )
 from .utils import get_nearby_users, get_interest_suggestions
 from .razorpay_client import create_order, verify_webhook_signature
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────
+# CHAT DELETE HELPERS
+# ─────────────────────────────────────────
+
+def _broadcast_to_conversation(conv_id, payload):
+    """
+    Realtime event ko us conversation room ke connected WebSocket clients
+    tak pahuchao. REST view se call hota hai (delete-for-everyone) taaki
+    doosra user bhi turant apni screen pe update dekh sake, refresh kiye
+    bina. Channel layer down ho ya na-configured ho toh silently skip —
+    REST operation khud fail nahi honi chahiye sirf isliye ki live-push
+    nahi ho paya (DB change toh ho hi chuka hai).
+    """
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            async_to_sync(channel_layer.group_send)(f"chat_{conv_id}", payload)
+    except Exception:
+        logger.exception("broadcast failed for conv_id=%s type=%s", conv_id, payload.get("type"))
+
+
+def _unhide_conversation_for_recipient(conversation, sender):
+    """
+    Naya message aaya — agar receiver ne pehle ye chat 'delete' ki thi
+    (apni list se hata di thi), toh wapas dikha do. WhatsApp jaisa hi
+    behavior: delete ka matlab sirf "abhi ke liye hata do", naya message
+    aane pe conversation phir se relevant ho jaati hai.
+    """
+    match     = conversation.match
+    recipient = match.user2 if match.user1 == sender else match.user1
+    ConversationUserState.objects.filter(
+        conversation=conversation, user=recipient, is_hidden=True,
+    ).update(is_hidden=False, hidden_at=None)
 
 
 # ─────────────────────────────────────────
@@ -191,6 +234,11 @@ class PhotoUploadView(APIView):
         if photo_url:
             profile.photo_url = photo_url
             profile.save(update_fields=["photo_url"])
+            # ✅ BUG FIX: photo yahan seedha save hota hai, ProfileSerializer
+            # ke bahar — is_complete isliye recalculate karna zaroori hai,
+            # warna "name+age+gender pehle se bhare the, sirf photo baaki
+            # thi" wale user ka is_complete kabhi True nahi banta tha.
+            profile.refresh_is_complete()
             return Response({"photo_url": photo_url})
         photo_file = request.FILES.get("photo")
         if not photo_file:
@@ -207,6 +255,7 @@ class PhotoUploadView(APIView):
             url = result.get("secure_url")
             profile.photo_url = url
             profile.save(update_fields=["photo_url"])
+            profile.refresh_is_complete()
             return Response({"photo_url": url})
         except Exception as e:
             return Response({"error": str(e)}, status=500)
@@ -466,16 +515,27 @@ class ConversationListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
+        # ✅ "Delete chat" ki hui conversations list se chhupi rehti hain
+        # (sirf is user ke liye — dusra user unaffected).
+        hidden_ids = ConversationUserState.objects.filter(
+            user=user, is_hidden=True,
+        ).values_list("conversation_id", flat=True)
+
         # ✅ Last message ab ek Subquery se aata hai (annotate) —
         #    pehle har conversation ke liye ALAG query lagti thi (N+1),
-        #    ab sab ek hi query mein aa jaata hai.
-        last_msg = Message.objects.filter(
-            conversation=OuterRef("pk")
-        ).order_by("-created_at")
+        #    ab sab ek hi query mein aa jaata hai. "Delete for me" hue
+        #    messages is user ke liye last-message preview mein bhi
+        #    kabhi nahi aate.
+        last_msg = (
+            Message.objects.filter(conversation=OuterRef("pk"))
+            .exclude(deleted_for=user)
+            .order_by("-created_at")
+        )
 
         return (
             Conversation.objects
             .filter(Q(match__user1=user) | Q(match__user2=user))
+            .exclude(id__in=hidden_ids)
             .select_related(
                 "match__user1__profile", "match__user2__profile",
             )
@@ -485,12 +545,21 @@ class ConversationListView(generics.ListAPIView):
                 last_message_sender_id  = Subquery(last_msg.values("sender_id")[:1]),
                 last_message_is_read    = Subquery(last_msg.values("is_read")[:1]),
                 last_message_id         = Subquery(last_msg.values("id")[:1]),
+                last_message_is_deleted = Subquery(last_msg.values("is_deleted_for_everyone")[:1]),
             )
             .order_by("-created_at")
         )
 
     def get_serializer_context(self):
-        return {"request": self.request}
+        user = self.request.user
+        # ✅ "Clear chat" thresholds ek hi extra query mein le aao —
+        # serializer ise per-row DB hit ke bina use karta hai.
+        cleared_map = dict(
+            ConversationUserState.objects
+            .filter(user=user, cleared_at__isnull=False)
+            .values_list("conversation_id", "cleared_at")
+        )
+        return {"request": self.request, "cleared_map": cleared_map}
 
 
 class MessageListView(APIView):
@@ -498,7 +567,9 @@ class MessageListView(APIView):
 
     def _get_conv(self, request, conv_id):
         try:
-            conv = Conversation.objects.get(id=conv_id)
+            conv = Conversation.objects.select_related(
+                "match__user1", "match__user2"
+            ).get(id=conv_id)
         except Conversation.DoesNotExist:
             return None, Response({"error": "Not found"}, status=404)
         if request.user not in [conv.match.user1, conv.match.user2]:
@@ -508,22 +579,152 @@ class MessageListView(APIView):
     def get(self, request, conv_id):
         conv, err = self._get_conv(request, conv_id)
         if err: return err
+
+        state = ConversationUserState.objects.filter(
+            conversation=conv, user=request.user
+        ).first()
+
+        # ✅ Chat khol rahe ho toh agar list se "delete" ki hui thi,
+        # wapas dikha do — user active dekh raha hai isliye ab wo
+        # relevant hai (WhatsApp jaisa hi behavior).
+        if state and state.is_hidden:
+            state.is_hidden = False
+            state.hidden_at = None
+            state.save(update_fields=["is_hidden", "hidden_at"])
+
         # ✅ select_related sender so serializer doesn't hit DB per message
-        msgs = list(conv.messages.select_related("sender").order_by("created_at"))
+        qs = conv.messages.select_related("sender").exclude(deleted_for=request.user)
+        if state and state.cleared_at:
+            qs = qs.filter(created_at__gt=state.cleared_at)
+        msgs = list(qs.order_by("created_at"))
+
         # Mark unread as read in one UPDATE query using already-known ids
         # (pehle wala queryset do baar evaluate hota tha — DB pe 2x load)
         unread_ids = [m.id for m in msgs if not m.is_read and m.sender_id != request.user.id]
         if unread_ids:
             Message.objects.filter(id__in=unread_ids).update(is_read=True)
-        return Response(MessageSerializer(msgs, many=True).data)
+        return Response(MessageSerializer(msgs, many=True, context={"request": request}).data)
 
     def post(self, request, conv_id):
         conv, err = self._get_conv(request, conv_id)
         if err: return err
-        s = MessageSerializer(data=request.data)
+        s = MessageSerializer(data=request.data, context={"request": request})
         s.is_valid(raise_exception=True)
-        s.save(conversation=conv, sender=request.user)
-        return Response(s.data, status=201)
+        message = s.save(conversation=conv, sender=request.user)
+        # ✅ Naya message aaya — agar receiver ne pehle ye chat "delete"
+        # ki thi (list se hata di thi), wapas dikha do.
+        _unhide_conversation_for_recipient(conv, request.user)
+        return Response(
+            MessageSerializer(message, context={"request": request}).data,
+            status=201,
+        )
+
+
+class MessageDeleteView(APIView):
+    """
+    DELETE /api/conversations/<conv_id>/messages/<message_id>/
+    body: {"scope": "me" | "everyone"}   (default "me")
+
+      - "me"       → sirf request.user ko is message ko dikhna band ho
+                      jaata hai; dusra participant bilkul pehle jaisa
+                      dekhta rehta hai.
+      - "everyone" → sirf sender kar sakta hai, aur sirf ek chhoti
+                      time-window ke andar (MESSAGE_DELETE_FOR_EVERYONE_
+                      WINDOW). Message dono taraf "This message was
+                      deleted" ban jaata hai aur connected WebSocket
+                      clients ko turant broadcast ho jaata hai.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, conv_id, message_id):
+        try:
+            conv = Conversation.objects.select_related(
+                "match__user1", "match__user2"
+            ).get(id=conv_id)
+        except Conversation.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+        if request.user not in [conv.match.user1, conv.match.user2]:
+            return Response({"error": "Not allowed"}, status=403)
+
+        try:
+            message = conv.messages.get(id=message_id)
+        except Message.DoesNotExist:
+            return Response({"error": "Message not found"}, status=404)
+
+        s = DeleteMessageSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        scope = s.validated_data["scope"]
+
+        if scope == "everyone":
+            if not message.can_delete_for_everyone(request.user):
+                return Response(
+                    {"error": "Ye message ab 'delete for everyone' nahi ho sakta"},
+                    status=400,
+                )
+            message.soft_delete_for_everyone(request.user)
+            _broadcast_to_conversation(conv_id, {
+                "type":       "message_deleted",
+                "id":         message.id,
+                "scope":      "everyone",
+                "deleted_by": str(request.user.id),
+            })
+        else:
+            message.deleted_for.add(request.user)
+
+        return Response(status=204)
+
+
+class ConversationClearView(APIView):
+    """
+    POST /api/conversations/<conv_id>/clear/
+    Sirf request.user ke liye ab tak ke saare messages hide kar do —
+    naye messages aane par chat phir se normal dikhti hai. Dusra
+    participant bilkul unaffected rehta hai.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, conv_id):
+        try:
+            conv = Conversation.objects.select_related(
+                "match__user1", "match__user2"
+            ).get(id=conv_id)
+        except Conversation.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+        if request.user not in [conv.match.user1, conv.match.user2]:
+            return Response({"error": "Not allowed"}, status=403)
+
+        ConversationUserState.objects.update_or_create(
+            conversation=conv, user=request.user,
+            defaults={"cleared_at": timezone.now()},
+        )
+        return Response({"message": "Chat cleared"}, status=200)
+
+
+class ConversationDeleteView(APIView):
+    """
+    DELETE /api/conversations/<conv_id>/
+    Chat list se hata do — sirf request.user ke liye. Match/Conversation
+    record kabhi delete nahi hota (dusre user ka data safe rehta hai),
+    aur agar dusra user naya message bhejta hai toh ye wapas list mein
+    dikhne lagegi.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, conv_id):
+        try:
+            conv = Conversation.objects.select_related(
+                "match__user1", "match__user2"
+            ).get(id=conv_id)
+        except Conversation.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+        if request.user not in [conv.match.user1, conv.match.user2]:
+            return Response({"error": "Not allowed"}, status=403)
+
+        ConversationUserState.objects.update_or_create(
+            conversation=conv, user=request.user,
+            defaults={"is_hidden": True, "hidden_at": timezone.now()},
+        )
+        return Response(status=204)
 
 
 # ─────────────────────────────────────────

@@ -10,6 +10,7 @@ from .views import (
     SearchView, NearbyUsersView,
     LikeView, MatchListView,
     ConversationListView, MessageListView, StartConversationView,
+    MessageDeleteView, ConversationClearView, ConversationDeleteView,
     BlockView, ReportView,
     SubscriptionPlansView, SubscriptionStatusView,
     CreateSubscriptionOrderView, VerifySubscriptionPaymentView,
@@ -50,6 +51,9 @@ urlpatterns = [
     path("conversations/",         ConversationListView.as_view(),  name="conversation-list"),
     path("conversations/start/",   StartConversationView.as_view(), name="start-conversation"),
     path("conversations/<int:conv_id>/messages/", MessageListView.as_view(), name="message-list"),
+    path("conversations/<int:conv_id>/messages/<int:message_id>/", MessageDeleteView.as_view(), name="message-delete"),
+    path("conversations/<int:conv_id>/clear/",     ConversationClearView.as_view(),  name="conversation-clear"),
+    path("conversations/<int:conv_id>/",           ConversationDeleteView.as_view(), name="conversation-delete"),
 
     # ── BLOCK / REPORT ──
     path("block/",                 BlockView.as_view(),             name="block"),

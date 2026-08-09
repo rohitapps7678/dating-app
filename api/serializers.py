@@ -4,7 +4,7 @@ from django.contrib.auth import authenticate
 from .models import (
     User, Profile, Like, Match, Conversation,
     Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
-    Subscription, PLAN_CONFIG,
+    Subscription, PLAN_CONFIG, ConversationUserState,
 )
 
 
@@ -198,11 +198,18 @@ class ProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Invalid interests: {invalid}")
         return value
 
+    def create(self, validated_data):
+        # ✅ BUG FIX: pehle sirf update() is_complete set karta tha,
+        # create() (pehli baar profile banane) par kabhi nahi — isliye
+        # naya user har login pe dobara "complete your profile" screen
+        # pe bhej diya jaata tha, chahe usne sab kuch bhar diya ho.
+        profile = super().create(validated_data)
+        profile.refresh_is_complete()
+        return profile
+
     def update(self, instance, validated_data):
         instance = super().update(instance, validated_data)
-        if instance.name and instance.age and instance.gender and instance.photo_url:
-            instance.is_complete = True
-            instance.save(update_fields=["is_complete"])
+        instance.refresh_is_complete()
         return instance
 
 
@@ -317,16 +324,38 @@ class MatchSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.UUIDField(source="sender.id", read_only=True)
+    can_delete_for_everyone = serializers.SerializerMethodField()
 
     class Meta:
         model        = Message
-        fields       = ["id", "sender_id", "text", "is_read", "created_at"]
-        read_only_fields = ["id", "sender_id", "is_read", "created_at"]
+        fields       = [
+            "id", "sender_id", "text", "is_read", "created_at",
+            "is_deleted_for_everyone", "can_delete_for_everyone",
+        ]
+        read_only_fields = [
+            "id", "sender_id", "is_read", "created_at",
+            "is_deleted_for_everyone", "can_delete_for_everyone",
+        ]
 
     def validate_text(self, value):
         if not value.strip():
             raise serializers.ValidationError("Message cannot be empty")
         return value
+
+    def get_can_delete_for_everyone(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return False
+        return obj.can_delete_for_everyone(request.user)
+
+    def to_representation(self, instance):
+        # ✅ Raw text DB mein rehta hai (moderation ke liye), lekin
+        # "delete for everyone" ho chuka message kisi bhi user ko uska
+        # asli content kabhi wapas nahi milta.
+        data = super().to_representation(instance)
+        if instance.is_deleted_for_everyone:
+            data["text"] = "This message was deleted"
+        return data
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -349,19 +378,49 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_last_message(self, obj):
         # ✅ Ye values ab view mein annotate() se already attached hain
         #    (Subquery), isliye yahan koi extra DB query nahi lagti.
-        msg_id = getattr(obj, "last_message_id", None)
+        request = self.context["request"]
+        msg_id  = getattr(obj, "last_message_id", None)
         if not msg_id:
             # fallback (agar kabhi annotate ke bina call ho)
-            msg = obj.messages.order_by("-created_at").first()
-            return MessageSerializer(msg).data if msg else None
+            msg = (
+                obj.messages.exclude(deleted_for=request.user)
+                .order_by("-created_at").first()
+            )
+            return MessageSerializer(msg, context=self.context).data if msg else None
+
+        # ✅ "Clear chat" kiya hua ho toh last-message preview bhi khaali
+        # dikhna chahiye — cleared_map view se context mein aata hai
+        # (ek hi extra query, saari conversations ke liye).
+        cleared_map = self.context.get("cleared_map", {})
+        cleared_at  = cleared_map.get(obj.id)
+        created_at  = obj.last_message_created_at
+        if cleared_at and created_at and created_at <= cleared_at:
+            return None
+
+        text = obj.last_message_text
+        if getattr(obj, "last_message_is_deleted", False):
+            text = "This message was deleted"
 
         return {
             "id":         msg_id,
             "sender_id":  str(obj.last_message_sender_id),
-            "text":       obj.last_message_text,
+            "text":       text,
             "is_read":    obj.last_message_is_read,
-            "created_at": obj.last_message_created_at,
+            "created_at": created_at,
         }
+
+
+# ─────────────────────────────────────────
+# CHAT — DELETE / CLEAR
+# ─────────────────────────────────────────
+
+class DeleteMessageSerializer(serializers.Serializer):
+    """
+    scope="me"       → sirf request.user ko message dikhna band ho jaata hai
+    scope="everyone" → sender-only, time-window ke andar; dono taraf
+                        "This message was deleted" ban jaata hai
+    """
+    scope = serializers.ChoiceField(choices=["me", "everyone"], default="me")
 
 
 # ─────────────────────────────────────────
