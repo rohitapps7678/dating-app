@@ -11,6 +11,8 @@ from .views import (
     LikeView, MatchListView,
     ConversationListView, MessageListView, StartConversationView,
     MessageDeleteView, ConversationClearView, ConversationDeleteView,
+    NotificationListView, NotificationUnreadCountView,
+    NotificationMarkReadView, NotificationMarkAllReadView, DeviceTokenView,
     BlockView, ReportView,
     SubscriptionPlansView, SubscriptionStatusView,
     CreateSubscriptionOrderView, VerifySubscriptionPaymentView,
@@ -67,4 +69,11 @@ urlpatterns = [
     path("subscriptions/verify/",       VerifySubscriptionPaymentView.as_view(), name="subscription-verify"),
     path("subscriptions/claim-trial/",  ClaimFreeTrialView.as_view(),            name="subscription-claim-trial"),
     path("subscriptions/webhook/",      RazorpayWebhookView.as_view(),           name="subscription-webhook"),
+
+    # ── NOTIFICATIONS ──
+    path("notifications/",                      NotificationListView.as_view(),       name="notification-list"),
+    path("notifications/unread-count/",         NotificationUnreadCountView.as_view(), name="notification-unread-count"),
+    path("notifications/mark-all-read/",        NotificationMarkAllReadView.as_view(), name="notification-mark-all-read"),
+    path("notifications/<int:notif_id>/read/",  NotificationMarkReadView.as_view(),    name="notification-mark-read"),
+    path("notifications/device-token/",         DeviceTokenView.as_view(),             name="device-token"),
 ]

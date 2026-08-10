@@ -351,6 +351,84 @@ class Report(models.Model):
 
 
 # ─────────────────────────────────────
+# NOTIFICATIONS  (in-app + real push via Firebase Cloud Messaging)
+# ─────────────────────────────────────
+
+class DeviceToken(models.Model):
+    """
+    Ek FCM push token = ek device. User multiple devices se login kar
+    sakta hai (phone + tablet), isliye ek user ke kai tokens ho sakte
+    hain — push bhejte waqt sabko bhej dete hain.
+
+    `token` khud unique hai (primary lookup key) — agar wahi device
+    kisi doosre account se login kare (logout → dusre number se login),
+    toh update_or_create() usi row ka `user` badal deta hai, purana
+    account ko galti se push nahi jaata.
+    """
+    PLATFORM_CHOICES = [
+        ("android", "Android"),
+        ("ios",     "iOS"),
+        ("web",     "Web"),
+    ]
+
+    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="device_tokens")
+    token      = models.CharField(max_length=255, unique=True)
+    platform   = models.CharField(max_length=10, choices=PLATFORM_CHOICES, default="android")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user"])]
+
+    def __str__(self):
+        return f"{self.user.phone} — {self.platform} token"
+
+
+class Notification(models.Model):
+    """
+    In-app notification record — Notification screen isi table se
+    populate hoti hai. Har real push (FCM) ke saath ek row yahan bhi
+    banti hai, taaki user baad mein app kholke bhi purani notifications
+    dekh sake (push miss ho jaaye — Do Not Disturb, offline, etc.).
+    """
+    TYPE_CHOICES = [
+        ("message", "New Message"),
+        ("match",   "New Match"),
+    ]
+
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    # Kis user ki wajah se ye notification bani (message bhejne wala,
+    # match hone wala doosra user). SET_NULL — agar actor account delete
+    # ho jaaye toh purani notification history na toote.
+    actor = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    type  = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    title = models.CharField(max_length=150)
+    body  = models.CharField(max_length=300, blank=True)
+
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="notifications")
+    match = models.ForeignKey(
+        Match, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="notifications")
+
+    is_read    = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["recipient", "-created_at"]),
+            models.Index(fields=["recipient", "is_read"]),
+        ]
+
+    def __str__(self):
+        return f"{self.type} → {self.recipient.phone}"
+
+
+# ─────────────────────────────────────
 # SUBSCRIPTION  (Razorpay)
 # ─────────────────────────────────────
 

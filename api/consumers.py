@@ -5,6 +5,7 @@ from channels.db import database_sync_to_async
 from django.utils import timezone
 
 from .models import Conversation, Message, User, Block
+from .notifications import notify_new_message
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # DB mein save karo
         message = await self.save_message(self.conversation, self.user, text)
+
+        # ✅ In-app Notification row + real FCM push — sync DB/network
+        # kaam hai, isliye thread pool mein (database_sync_to_async).
+        await self._notify_new_message(message)
 
         # Dono users ko broadcast karo
         sent = await self._safe_group_send(
@@ -310,6 +315,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             sender=sender,
             text=text,
         )
+
+    @database_sync_to_async
+    def _notify_new_message(self, message):
+        notify_new_message(message)
 
     @database_sync_to_async
     def mark_messages_read(self, conversation, user):

@@ -5,6 +5,7 @@ from .models import (
     User, Profile, Like, Match, Conversation,
     Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
     Subscription, PLAN_CONFIG, ConversationUserState,
+    Notification, DeviceToken,
 )
 
 
@@ -421,6 +422,55 @@ class DeleteMessageSerializer(serializers.Serializer):
                         "This message was deleted" ban jaata hai
     """
     scope = serializers.ChoiceField(choices=["me", "everyone"], default="me")
+
+
+# ─────────────────────────────────────────
+# NOTIFICATIONS
+# ─────────────────────────────────────────
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_name      = serializers.SerializerMethodField()
+    actor_photo     = serializers.SerializerMethodField()
+    conversation_id = serializers.SerializerMethodField()
+    match_id        = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Notification
+        fields = [
+            "id", "type", "title", "body", "is_read", "created_at",
+            "actor_name", "actor_photo", "conversation_id", "match_id",
+        ]
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return None
+        try:
+            return obj.actor.profile.name
+        except Profile.DoesNotExist:
+            return None
+
+    def get_actor_photo(self, obj):
+        if not obj.actor:
+            return None
+        try:
+            return obj.actor.profile.photo_url
+        except Profile.DoesNotExist:
+            return None
+
+    def get_conversation_id(self, obj):
+        return obj.conversation_id
+
+    def get_match_id(self, obj):
+        return obj.match_id
+
+
+class DeviceTokenSerializer(serializers.Serializer):
+    """FCM push token registration — token unique hai, is user pe
+    'move' ho jaata hai agar pehle kisi aur account se registered tha
+    (same phone, dusra account login)."""
+    token    = serializers.CharField(max_length=255)
+    platform = serializers.ChoiceField(
+        choices=["android", "ios", "web"], default="android")
 
 
 # ─────────────────────────────────────────

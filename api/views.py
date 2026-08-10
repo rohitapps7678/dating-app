@@ -20,7 +20,7 @@ from .models import (
     Like, Match, Conversation,
     Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
     Subscription, PLAN_CONFIG, PLAN_FEATURES, FREE_TRIAL_DAYS,
-    ConversationUserState,
+    ConversationUserState, Notification, DeviceToken,
 )
 from .serializers import (
     UserSerializer,
@@ -32,10 +32,12 @@ from .serializers import (
     BlockSerializer, ReportSerializer,
     SubscriptionSerializer, CreateSubscriptionOrderSerializer,
     VerifySubscriptionPaymentSerializer,
+    NotificationSerializer, DeviceTokenSerializer,
     get_user_from_id,
 )
 from .utils import get_nearby_users, get_interest_suggestions
 from .razorpay_client import create_order, verify_webhook_signature
+from .notifications import notify_new_message, notify_new_match
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +440,7 @@ class LikeView(APIView):
             ).first()
             if match and hasattr(match, "conversation"):
                 response_data["conversation_id"] = match.conversation.id
+                notify_new_match(match)
         return Response(response_data, status=201)
 
 
@@ -614,6 +617,8 @@ class MessageListView(APIView):
         # ✅ Naya message aaya — agar receiver ne pehle ye chat "delete"
         # ki thi (list se hata di thi), wapas dikha do.
         _unhide_conversation_for_recipient(conv, request.user)
+        # ✅ In-app Notification row + real FCM push, dono ek saath
+        notify_new_message(message)
         return Response(
             MessageSerializer(message, context={"request": request}).data,
             status=201,
@@ -724,6 +729,94 @@ class ConversationDeleteView(APIView):
             conversation=conv, user=request.user,
             defaults={"is_hidden": True, "hidden_at": timezone.now()},
         )
+        return Response(status=204)
+
+
+# ─────────────────────────────────────────
+# NOTIFICATIONS
+# ─────────────────────────────────────────
+
+class NotificationListView(generics.ListAPIView):
+    """GET /api/notifications/ — sabse naya pehle. Notification screen
+    isi se populate hoti hai."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class    = NotificationSerializer
+    pagination_class    = FastPagination
+
+    def get_queryset(self):
+        return (
+            Notification.objects
+            .filter(recipient=self.request.user)
+            .select_related("actor__profile", "conversation", "match")
+        )
+
+
+class NotificationUnreadCountView(APIView):
+    """GET /api/notifications/unread-count/ — home screen ke bell icon
+    pe badge dikhane ke liye (lightweight, message list nahi laata)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        count = Notification.objects.filter(
+            recipient=request.user, is_read=False
+        ).count()
+        return Response({"unread_count": count})
+
+
+class NotificationMarkReadView(APIView):
+    """POST /api/notifications/<id>/read/ — ek notification read mark karo
+    (list mein tap karne par)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, notif_id):
+        updated = Notification.objects.filter(
+            id=notif_id, recipient=request.user
+        ).update(is_read=True)
+        if not updated:
+            return Response({"error": "Not found"}, status=404)
+        return Response(status=204)
+
+
+class NotificationMarkAllReadView(APIView):
+    """POST /api/notifications/mark-all-read/ — notification screen khulte
+    hi (ya "mark all read" button se) saari unread ko ek saath clear karo."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        Notification.objects.filter(
+            recipient=request.user, is_read=False
+        ).update(is_read=True)
+        return Response(status=204)
+
+
+class DeviceTokenView(APIView):
+    """
+    POST   /api/notifications/device-token/  — FCM token register karo
+           (app start pe, aur token refresh hone par).
+    DELETE /api/notifications/device-token/  — logout ke waqt token
+           hata do (is device pe ab isi user ko push nahi jaana chahiye).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        s = DeviceTokenSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        # ✅ token unique hai — agar wahi device kisi aur account se
+        # pehle registered tha (logout → dusre number se login), isi
+        # row ka owner badal do taaki purane account ko push na jaaye.
+        DeviceToken.objects.update_or_create(
+            token=s.validated_data["token"],
+            defaults={
+                "user":     request.user,
+                "platform": s.validated_data["platform"],
+            },
+        )
+        return Response(status=204)
+
+    def delete(self, request):
+        token = request.data.get("token")
+        if token:
+            DeviceToken.objects.filter(token=token, user=request.user).delete()
         return Response(status=204)
 
 
