@@ -3,7 +3,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     HealthView,
     InterestsListView, InterestSuggestionsView,
-    FirebaseAuthView, LogoutView,
+    FirebaseAuthView, TestPhoneLoginView, LogoutView,
     RegisterView, LoginView,
     ProfileView, OtherProfileView,
     PhotoUploadView, LiveToggleView,
@@ -24,6 +24,7 @@ urlpatterns = [
 
     # ── AUTH (Phone OTP via Firebase) ──
     path("auth/firebase/",         FirebaseAuthView.as_view(),      name="firebase-auth"),
+    path("auth/test-login/",       TestPhoneLoginView.as_view(),    name="test-login"),
     path("auth/logout/",           LogoutView.as_view(),            name="logout"),
     path("auth/token/refresh/",    TokenRefreshView.as_view(),      name="token-refresh"),
 

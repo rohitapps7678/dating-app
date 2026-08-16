@@ -25,7 +25,7 @@ from .models import (
 from .serializers import (
     UserSerializer,
     RegisterSerializer, LoginSerializer,
-    FirebaseAuthSerializer,
+    FirebaseAuthSerializer, TestPhoneLoginSerializer,
     ProfileSerializer, NearbyProfileSerializer,
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer, DeleteMessageSerializer,
@@ -161,6 +161,35 @@ class FirebaseAuthView(APIView):
         s = FirebaseAuthSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         user, is_new = s.get_or_create_user(s.validated_data)
+
+        if not user.is_active:
+            return Response({"error": "Account disabled hai"}, status=403)
+
+        profile_complete = hasattr(user, "profile") and user.profile.is_complete
+
+        return Response({
+            "tokens": get_tokens(user),
+            "user": UserSerializer(user).data,
+            "profile_complete": profile_complete,
+            "is_new_user": is_new,
+        })
+
+
+class TestPhoneLoginView(APIView):
+    """
+    ⚠️ Sirf whitelisted test number (default +917678350760, OTP 123456)
+    ke liye — Play Store review / QA taaki bina real SMS ke login kar
+    sakein. Serializer khud hi phone match karke ye ensure karta hai ki
+    baaki sab numbers is se login nahi kar sakte — unke liye normal
+    FirebaseAuthView (real Firebase OTP) hi chalta rehta hai, bilkul
+    pehle jaisa.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        s = TestPhoneLoginSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        user, is_new = s.get_or_create_user()
 
         if not user.is_active:
             return Response({"error": "Account disabled hai"}, status=403)

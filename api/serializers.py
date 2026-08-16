@@ -1,3 +1,5 @@
+import os
+
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 
@@ -143,6 +145,52 @@ class FirebaseAuthSerializer(serializers.Serializer):
                     profile.save()
 
             return user, created
+
+
+class TestPhoneLoginSerializer(serializers.Serializer):
+    """
+    ⚠️ SIRF EK WHITELISTED TEST NUMBER KE LIYE.
+    Play Store review team / QA ke paas real SIM nahi hoti jisse Firebase
+    SMS OTP receive ho sake — is liye ek fixed number + fixed OTP se
+    bina Firebase ke seedha login allow karte hain. Baaki SAARE numbers
+    hamesha ki tarah FirebaseAuthView (real SMS OTP) se hi login honge.
+
+    Number aur OTP env vars se aate hain (.env mein):
+        TEST_PHONE_NUMBER=+917678350760
+        TEST_OTP_CODE=123456
+    Agar env var set nahi hai to neeche wali default value use hogi.
+    """
+    phone = serializers.CharField(write_only=True)
+    otp   = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        test_phone = os.getenv("TEST_PHONE_NUMBER", "+917678350760").strip()
+        test_otp   = os.getenv("TEST_OTP_CODE", "123456").strip()
+
+        phone = data.get("phone", "").strip()
+        otp   = data.get("otp", "").strip()
+
+        # ✅ Number khud match nahi karta to ye endpoint bilkul kaam nahi
+        # karega — normal users galti se bhi is raaste login nahi kar
+        # sakte, chahe unhe ye endpoint pata bhi ho.
+        if phone != test_phone:
+            raise serializers.ValidationError("Test login sirf whitelisted number ke liye hai")
+        if otp != test_otp:
+            raise serializers.ValidationError("Galat OTP")
+
+        data["phone"] = phone
+        return data
+
+    def get_or_create_user(self):
+        phone = self.validated_data["phone"]
+        user, created = User.objects.get_or_create(
+            phone=phone,
+            defaults={"is_active": True},
+        )
+        if created:
+            user.set_unusable_password()
+            user.save()
+        return user, created
 
 
 # ─────────────────────────────────────────
