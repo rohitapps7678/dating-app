@@ -145,9 +145,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # DB mein save karo
         message = await self.save_message(self.conversation, self.user, text)
 
-        # ✅ In-app Notification row + real FCM push — sync DB/network
-        # kaam hai, isliye thread pool mein (database_sync_to_async).
-        await self._notify_new_message(message)
+        # ✅ CRITICAL FIX: pehle notify_new_message() yahan broadcast se
+        # PEHLE call hoti thi. Agar usme (FCM/Notification-row/DB) koi
+        # exception aata (push service down, invalid token, waghera),
+        # toh poora handle_message() wahin ruk jaata — broadcast
+        # (_safe_group_send neeche) kabhi chalta hi nahi, sender ko kabhi
+        # "sent" confirmation nahi milta, aur client-side 8s timeout ke
+        # baad message "failed" dikhta — jabki DB mein wo save ho chuka
+        # hota tha. Ab broadcast PEHLE hota hai (sender/receiver ke liye
+        # sabse zaroori cheez), aur notification apne alag try/except mein
+        # best-effort hai — uska fail hona chat delivery ko kabhi block
+        # nahi karega.
 
         # Dono users ko broadcast karo
         sent = await self._safe_group_send(
@@ -169,6 +177,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send_error(
                 "Message saved but couldn't deliver live — pull to refresh",
                 client_id=client_id,
+            )
+
+        # ✅ In-app Notification row + real FCM push — best-effort, apne
+        # alag try/except mein. Isse fail hone se sender ka "sent" tick
+        # kabhi affect nahi hota — sirf push notification skip ho jaata
+        # hai, jo agli baar app khulne par unread-count se pura ho jaata
+        # hai.
+        try:
+            await self._notify_new_message(message)
+        except Exception:
+            logger.exception(
+                "notify_new_message failed for message_id=%s (conv_id=%s) — "
+                "message delivered fine, sirf push notification skip hua",
+                message.id, getattr(self, "conv_id", "?"),
             )
 
     async def handle_typing(self, data):
