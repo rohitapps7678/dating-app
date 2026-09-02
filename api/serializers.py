@@ -2,6 +2,8 @@ import os
 
 from rest_framework import serializers
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import (
     User, Profile, Like, Match, Conversation,
@@ -33,6 +35,17 @@ def get_user_from_id(value):
 class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=30)
     password = serializers.CharField(min_length=6, write_only=True)
+
+    def validate_password(self, value):
+        # ✅ PRODUCTION: min_length=6 above was the ONLY password rule —
+        # "123456" passed. This runs Django's configured
+        # AUTH_PASSWORD_VALIDATORS (settings.py) too: minimum length 8,
+        # rejects common/leaked passwords, rejects all-numeric passwords.
+        try:
+            validate_password(value)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(list(e.messages))
+        return value
 
     def validate_username(self, value):
         value = value.strip().lower()

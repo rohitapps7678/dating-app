@@ -72,7 +72,7 @@ def _init_firebase():
                 })
 
                 _project_id = project_id
-                print(f"[Firebase] ✅ Initialized using FIREBASE_SERVICE_ACCOUNT_JSON "
+                logger.info(f"[Firebase] Initialized using FIREBASE_SERVICE_ACCOUNT_JSON "
                       f"(project_id={project_id})")
                 _initialized = True
                 return
@@ -90,32 +90,32 @@ def _init_firebase():
                     cred = credentials.Certificate(cred_path)
                     firebase_admin.initialize_app(cred, {'projectId': project_id})
                     _project_id = project_id
-                    print(f"[Firebase] ✅ Initialized from local file: {cred_path} "
+                    logger.info(f"[Firebase] Initialized from local file: {cred_path} "
                           f"(project_id={project_id})")
                     _initialized = True
                     return
                 else:
-                    print(f"[Firebase] ⚠️  File not found: {cred_path}")
+                    logger.warning(f"[Firebase] File not found: {cred_path}")
 
             # Agar kuch bhi nahi mila
-            print("[Firebase] ❌ No Firebase credentials found!")
-            print("   → Set FIREBASE_SERVICE_ACCOUNT_JSON in Render Environment Variables")
+            logger.error("[Firebase] No Firebase credentials found!")
+            logger.error("[Firebase] Set FIREBASE_SERVICE_ACCOUNT_JSON in Render Environment Variables")
             raise Exception("Firebase service account not configured. Check environment variables.")
 
         except json.JSONDecodeError as e:
-            print(f"[Firebase] ❌ Invalid JSON format in FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
+            logger.error(f"[Firebase] Invalid JSON format in FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
             raise
         except ValueError as e:
             # ✅ "The default Firebase app already exists" — dusra thread/
             # request pehle hi init kar chuka, ye fatal error nahi hai.
             if "already exists" in str(e):
-                print("[Firebase] ℹ️ App already initialized by another thread — reusing it")
+                logger.info("[Firebase] App already initialized by another thread — reusing it")
                 _initialized = True
                 return
-            print(f"[Firebase] ❌ Initialization failed: {e}")
+            logger.exception(f"[Firebase] Initialization failed: {e}")
             raise
         except Exception as e:
-            print(f"[Firebase] ❌ Initialization failed: {e}")
+            logger.exception(f"[Firebase] Initialization failed: {e}")
             raise
 
 
@@ -133,7 +133,7 @@ def verify_firebase_token(id_token: str) -> dict | None:
         return decoded
 
     except firebase_admin.auth.ExpiredIdTokenError:
-        print("[Firebase] ❌ Token verify failed: token has EXPIRED "
+        logger.warning("[Firebase] Token verify failed: token has EXPIRED "
               "(client ne purana/cached idToken bheja — dobara sign-in karke fresh token lo)")
         return None
     except firebase_admin.auth.InvalidIdTokenError as e:
@@ -144,13 +144,13 @@ def verify_firebase_token(id_token: str) -> dict | None:
         # print hota hai — agar ye "aud"/"audience"/"project" ka zikar
         # kare, toh iska matlab FIREBASE_SERVICE_ACCOUNT_JSON aur
         # Flutter app ka Firebase project ALAG-ALAG hai.
-        print(f"[Firebase] ❌ Token verify failed — INVALID token: {e} "
+        logger.warning(f"[Firebase] Token verify failed — INVALID token: {e} "
               f"(current backend project_id={_project_id!r}; agar error mein "
               f"'audience'/'project' ka zikar hai toh backend service-account "
               f"aur Flutter app ka Firebase project match nahi kar rahe)")
         return None
     except Exception as e:
-        print(f"[Firebase] ❌ Token verify failed — unexpected error ({type(e).__name__}): {e}")
+        logger.exception(f"[Firebase] Token verify failed — unexpected error ({type(e).__name__}): {e}")
         return None
 
 

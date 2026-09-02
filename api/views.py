@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
@@ -92,6 +93,31 @@ class FastPagination(PageNumberPagination):
     max_page_size = 50
 
 
+class AuthBurstThrottle(SimpleRateThrottle):
+    """
+    ✅ PRODUCTION HARDENING: none of the auth endpoints (Firebase token
+    exchange, test login, username/password login+register) had any rate
+    limiting — they could be hit as fast as the network allows, which is
+    an open door for OTP/credential brute-forcing and cheap DoS on the
+    Firebase Admin SDK / DB. This is IP-based and hardcodes its own rate
+    (via get_rate()) so it works even without a matching entry in
+    settings.py's REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"].
+    Tune the rate below (or move it into settings) once you have real
+    traffic numbers.
+    """
+    scope = "auth_burst"
+    rate = "15/min"
+
+    def get_rate(self):
+        return self.rate
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {
+            "scope": self.scope,
+            "ident": self.get_ident(request),
+        }
+
+
 # ─────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────
@@ -139,7 +165,12 @@ class InterestSuggestionsView(APIView):
             return Response({"results": []})
         if not my_profile.interests:
             return Response({"results": [], "message": "Add interests to get suggestions"})
-        profiles = get_interest_suggestions(my_profile, limit=20)
+        # ✅ BUG FIX: blocked users were previously not excluded from
+        # suggestions (see utils.get_interest_suggestions) — now filtered
+        # the same way Nearby/Search already do.
+        blocked_ids = list(Block.objects.filter(
+            blocker=request.user).values_list("blocked_id", flat=True))
+        profiles = get_interest_suggestions(my_profile, limit=20, blocked_ids=blocked_ids)
         return Response({"results": NearbyProfileSerializer(
             profiles, many=True, context={"request": request}).data})
 
@@ -156,6 +187,7 @@ class InterestSuggestionsView(APIView):
 
 class FirebaseAuthView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes    = [AuthBurstThrottle]
 
     def post(self, request):
         s = FirebaseAuthSerializer(data=request.data)
@@ -185,6 +217,7 @@ class TestPhoneLoginView(APIView):
     pehle jaisa.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes    = [AuthBurstThrottle]
 
     def post(self, request):
         s = TestPhoneLoginSerializer(data=request.data)
@@ -210,6 +243,7 @@ class TestPhoneLoginView(APIView):
 
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes    = [AuthBurstThrottle]
 
     def post(self, request):
         s = RegisterSerializer(data=request.data)
@@ -226,6 +260,7 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes    = [AuthBurstThrottle]
 
     def post(self, request):
         s = LoginSerializer(data=request.data)
@@ -417,9 +452,19 @@ class NearbyUsersView(APIView):
             return Response({"error": "Invalid coordinates"}, status=400)
 
         profile, _ = Profile.objects.get_or_create(user=request.user)
-        profile.latitude  = lat
-        profile.longitude = lng
-        profile.save(update_fields=["latitude", "longitude"])
+        # ✅ PERF / DB-cost: this endpoint is polled frequently (live
+        # location updates). Previously it wrote lat/lng on EVERY call
+        # even when the coordinates hadn't actually moved, burning a
+        # write query (and Neon compute) for nothing. Now it only writes
+        # when the location has meaningfully changed (~1m threshold).
+        if (
+            profile.latitude is None or profile.longitude is None
+            or abs(profile.latitude - lat) > 1e-5
+            or abs(profile.longitude - lng) > 1e-5
+        ):
+            profile.latitude  = lat
+            profile.longitude = lng
+            profile.save(update_fields=["latitude", "longitude"])
 
         blocked_ids = list(Block.objects.filter(
             blocker=request.user).values_list("blocked_id", flat=True))
