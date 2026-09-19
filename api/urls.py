@@ -4,7 +4,7 @@ from .views import (
     HealthView,
     InterestsListView, InterestSuggestionsView,
     FirebaseAuthView, TestPhoneLoginView, LogoutView,
-    RegisterView, LoginView,
+    RegisterView, LoginView, ZegoTokenView,
     ProfileView, OtherProfileView,
     PhotoUploadView, LiveToggleView,
     SearchView, NearbyUsersView,
@@ -75,6 +75,7 @@ urlpatterns = [
     path("notifications/",                      NotificationListView.as_view(),       name="notification-list"),
     path("notifications/unread-count/",         NotificationUnreadCountView.as_view(), name="notification-unread-count"),
     path("notifications/mark-all-read/",        NotificationMarkAllReadView.as_view(), name="notification-mark-all-read"),
+    path("zego/token/", ZegoTokenView.as_view(), name="zego-token"),
     path("notifications/<int:notif_id>/read/",  NotificationMarkReadView.as_view(),    name="notification-mark-read"),
     path("notifications/device-token/",         DeviceTokenView.as_view(),             name="device-token"),
 ]

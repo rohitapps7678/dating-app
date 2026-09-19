@@ -10,6 +10,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
 from django.conf import settings
+from .zego_token import get_zego_token
 from datetime import timedelta
 import cloudinary, cloudinary.uploader
 
@@ -1110,3 +1111,35 @@ class RazorpayWebhookView(APIView):
                 sub.mark_paid(payment_id, signature="webhook-verified")
 
         return Response({"status": "ok"})
+
+class ZegoTokenView(APIView):
+    """
+    GET /api/zego/token/
+ 
+    Voice/video call shuru karne se THEEK PEHLE Flutter app yahan se ek
+    fresh ZegoCloud RTC token maangta hai. Har baar naya token generate
+    hota hai (server par kuch store nahi hota — stateless), isliye har
+    call attempt ke pehle ise call karna safe aur sahi tareeka hai.
+ 
+    ✅ Security: ZEGO_SERVER_SECRET sirf yahan, server par use hota hai —
+    client ko kabhi nahi bheja jaata. Client ko sirf ye short-lived token
+    milta hai jismein already current user ka ID embed hai, isliye koi
+    user doosre ke naam se call join nahi kar sakta.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def get(self, request):
+        try:
+            token = get_zego_token(str(request.user.id))
+        except Exception:
+            logger.exception("Zego token generation failed for user_id=%s", request.user.id)
+            return Response(
+                {"detail": "Call token generate nahi ho paaya. Server config check karo."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response({
+            "app_id":  int(settings.ZEGO_APP_ID),
+            "user_id": str(request.user.id),
+            "token":   token,
+        })
+ 

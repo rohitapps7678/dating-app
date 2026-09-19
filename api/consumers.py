@@ -102,6 +102,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Koi DB/broadcast kaam nahi, bas turant pong wapas bhejo.
                 await self.send(text_data=json.dumps({"type": "pong"}))
 
+            elif msg_type in (
+                "call_invite", "call_answer", "call_reject", "call_end", "call_busy",
+            ):
+                # ✅ VOICE/VIDEO CALL SIGNALING — actual audio/video ZegoCloud
+                # ke RTC engine se seedha peer-to-peer (Zego ke servers ke
+                # through) jaata hai, DB/humare server se nahi guzarta. Ye
+                # WebSocket sirf "ring karo / uthao / kaato" jaisa halka
+                # signaling relay karta hai — bilkul chat_message jaisa hi
+                # group-broadcast pattern, koi DB save nahi hoti.
+                await self.handle_call_signal(msg_type, data)
+
             else:
                 await self.send_error(f"Unknown type: {msg_type}")
 
@@ -193,6 +204,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 message.id, getattr(self, "conv_id", "?"),
             )
 
+    async def handle_call_signal(self, action, data):
+        """
+        Call invite/answer/reject/end — sabko isi ek handler se guzaarte
+        hain, bas 'action' field alag hota hai. call_id client-generated
+        hai (chat message ke client_id jaisa hi idea) taaki dono taraf ek
+        hi call attempt ko match kar sakein.
+        """
+        call_id = data.get("call_id")
+        if not call_id:
+            await self.send_error("call_id required")
+            return
+
+        # Block check — blocked user ko call bhi nahi lagni chahiye,
+        # bilkul message jaisa hi.
+        if action == "call_invite":
+            other = await self.get_other_user(self.user, self.conversation)
+            if await self.is_blocked(self.user, other):
+                await self.send_error("Cannot call this user")
+                return
+
+        payload = {
+            "type":         "call_signal",
+            "action":       action,
+            "call_id":      call_id,
+            "from_user_id": str(self.user.id),
+            # ✅ Sirf 'call_invite' ke liye zaroori — baaki actions
+            # (answer/reject/end) mein None rahega, koi issue nahi.
+            "call_type": data.get("call_type"),   # 'voice' | 'video'
+            "room_id":   data.get("room_id"),     # ZegoCloud room ID
+            "reason":    data.get("reason"),
+        }
+        sent = await self._safe_group_send(self.room_name, payload)
+        if not sent and action == "call_invite":
+            # Live relay fail hui (Redis down waghera) — caller ko turant
+            # bata do, 30s ringing timeout ka wait mat karwao.
+            await self.send_error("Call connect nahi ho paayi — dobara try karo", call_id=call_id)
+
     async def handle_typing(self, data):
         """Typing indicator — DB mein save nahi hota"""
         await self._safe_group_send(
@@ -260,6 +308,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "id":         event["id"],
             "scope":      event["scope"],
             "deleted_by": event["deleted_by"],
+        }))
+
+    async def call_signal(self, event):
+        """
+        Call invite/answer/reject/end doosre connected client (Flutter)
+        tak forward karo. Apne aap ko echo nahi karte — jisne bheja usi
+        ko wapas nahi jaana chahiye.
+        """
+        if str(self.user.id) == event.get("from_user_id"):
+            return
+        await self.send(text_data=json.dumps({
+            "type":         "call_signal",
+            "action":       event["action"],
+            "call_id":      event["call_id"],
+            "from_user_id": event["from_user_id"],
+            "call_type":    event.get("call_type"),
+            "room_id":      event.get("room_id"),
+            "reason":       event.get("reason"),
         }))
 
     async def user_status(self, event):

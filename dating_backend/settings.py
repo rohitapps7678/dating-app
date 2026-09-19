@@ -263,6 +263,10 @@ cloudinary.config(
     api_secret = os.getenv("CLOUDINARY_API_SECRET"),
     secure     = True,
 )
+ZEGO_APP_ID = int(os.environ.get("ZEGO_APP_ID", "0"))
+ZEGO_SERVER_SECRET = os.environ.get("ZEGO_SERVER_SECRET", "")  # exactly 32 chars
+ZEGO_TOKEN_EFFECTIVE_SECONDS = 60 * 60 * 24  # 24 hours — optional, ye default hai
+ 
 
 # ── MEDIA (local fallback) ──
 MEDIA_URL  = "/media/"
