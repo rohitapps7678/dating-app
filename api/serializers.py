@@ -280,15 +280,19 @@ class NearbyProfileSerializer(serializers.ModelSerializer):
     common_interests = serializers.SerializerMethodField()
     interest_score   = serializers.SerializerMethodField()
     position_label   = serializers.SerializerMethodField()
+    user_id = serializers.SerializerMethodField()
 
     class Meta:
         model  = Profile
         fields = [
-            "id", "name", "age", "gender", "photo_url",
+            "id", "user_id", "name", "age", "gender", "photo_url",
             "interests", "position", "position_label",
             "has_room", "distance", "is_live",
             "common_interests", "interest_score",
         ]
+
+    def get_user_id(self, obj):
+            return str(obj.user_id)
 
     def get_common_interests(self, obj):
         request = self.context.get("request")
