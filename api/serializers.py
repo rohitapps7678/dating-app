@@ -50,12 +50,12 @@ class RegisterSerializer(serializers.Serializer):
     def validate_username(self, value):
         value = value.strip().lower()
         if len(value) < 3:
-            raise serializers.ValidationError("Username kam se kam 3 characters ka hona chahiye")
+            raise serializers.ValidationError("Username must be at least 3 characters long")
         if not value.replace("_", "").replace(".", "").isalnum():
             raise serializers.ValidationError(
-                "Username sirf letters, numbers, '_' aur '.' contain kar sakta hai")
+                "Username can only contain letters, numbers, '_' and '.'")
         if User.objects.filter(phone=value).exists():
-            raise serializers.ValidationError("Ye username already liya ja chuka hai")
+            raise serializers.ValidationError("This username is already taken")
         return value
 
     def create(self, validated_data):
@@ -73,7 +73,7 @@ class LoginSerializer(serializers.Serializer):
         username = data["username"].strip().lower()
         user = authenticate(username=username, password=data["password"])
         if not user:
-            raise serializers.ValidationError("Galat username ya password")
+            raise serializers.ValidationError("Incorrect username or password")
         if not user.is_active:
             raise serializers.ValidationError("Account is disabled")
         data["user"] = user
@@ -187,9 +187,9 @@ class TestPhoneLoginSerializer(serializers.Serializer):
         # karega — normal users galti se bhi is raaste login nahi kar
         # sakte, chahe unhe ye endpoint pata bhi ho.
         if phone != test_phone:
-            raise serializers.ValidationError("Test login sirf whitelisted number ke liye hai")
+            raise serializers.ValidationError("Test login is only available for the whitelisted number")
         if otp != test_otp:
-            raise serializers.ValidationError("Galat OTP")
+            raise serializers.ValidationError("Incorrect OTP")
 
         data["phone"] = phone
         return data
@@ -347,7 +347,7 @@ class LikeSerializer(serializers.ModelSerializer):
         request  = self.context["request"]
         receiver = get_user_from_id(value)
         if receiver == request.user:
-            raise serializers.ValidationError("Apne aap ko like nahi kar sakte")
+            raise serializers.ValidationError("You can't like yourself")
         if not receiver.is_active:
             raise serializers.ValidationError("User not found")
         if Like.objects.filter(sender=request.user, receiver=receiver).exists():
@@ -565,7 +565,7 @@ class BlockSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         blocked = get_user_from_id(value)
         if blocked == request.user:
-            raise serializers.ValidationError("Apne aap ko block nahi kar sakte")
+            raise serializers.ValidationError("You can't block yourself")
         if Block.objects.filter(blocker=request.user, blocked=blocked).exists():
             raise serializers.ValidationError("Already blocked")
         return str(blocked.id)
@@ -589,7 +589,7 @@ class ReportSerializer(serializers.ModelSerializer):
         request  = self.context["request"]
         reported = get_user_from_id(value)
         if reported == request.user:
-            raise serializers.ValidationError("Apne aap ko report nahi kar sakte")
+            raise serializers.ValidationError("You can't report yourself")
         return str(reported.id)
 
     def create(self, validated_data):

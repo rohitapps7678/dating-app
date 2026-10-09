@@ -196,7 +196,7 @@ class FirebaseAuthView(APIView):
         user, is_new = s.get_or_create_user(s.validated_data)
 
         if not user.is_active:
-            return Response({"error": "Account disabled hai"}, status=403)
+            return Response({"error": "Account is disabled"}, status=403)
 
         profile_complete = hasattr(user, "profile") and user.profile.is_complete
 
@@ -226,7 +226,7 @@ class TestPhoneLoginView(APIView):
         user, is_new = s.get_or_create_user()
 
         if not user.is_active:
-            return Response({"error": "Account disabled hai"}, status=403)
+            return Response({"error": "Account is disabled"}, status=403)
 
         profile_complete = hasattr(user, "profile") and user.profile.is_complete
 
@@ -569,7 +569,7 @@ class StartConversationView(APIView):
         other = get_user_from_id(other_id)
 
         if other == request.user:
-            return Response({"error": "Apne aap ko message nahi kar sakte"}, status=400)
+            return Response({"error": "You can't message yourself"}, status=400)
         if not other.is_active:
             return Response({"error": "User not found"}, status=404)
 
@@ -767,7 +767,7 @@ class MessageDeleteView(APIView):
         if scope == "everyone":
             if not message.can_delete_for_everyone(request.user):
                 return Response(
-                    {"error": "Ye message ab 'delete for everyone' nahi ho sakta"},
+                    {"error": "This message can no longer be deleted for everyone"},
                     status=400,
                 )
             message.soft_delete_for_everyone(request.user)
@@ -1163,7 +1163,7 @@ class ZegoTokenView(APIView):
         except Exception:
             logger.exception("Zego token generation failed for user_id=%s", request.user.id)
             return Response(
-                {"detail": "Call token generate nahi ho paaya. Server config check karo."},
+                {"detail": "Couldn't generate the call token. Please check the server configuration."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         return Response({
