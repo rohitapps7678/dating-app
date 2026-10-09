@@ -232,18 +232,29 @@ class ProfileSerializer(serializers.ModelSerializer):
             "photo_url", "interests",
             "position", "position_label",
             "has_room",
-            "latitude", "longitude",
+            "latitude", "longitude", "area_label",
             "is_complete", "is_live", "live_since", "updated_at",
         ]
         read_only_fields = [
             "id", "phone", "is_complete",
-            "live_since", "updated_at", "position_label"
+            "live_since", "updated_at", "position_label", "area_label"
         ]
 
     def get_position_label(self, obj):
         if not obj.position:
             return None
         return dict(POSITION_CHOICES).get(obj.position, obj.position)
+
+    def to_representation(self, instance):
+        # 🔒 PRIVACY: doosre user ki exact latitude/longitude kabhi client ko
+        # mat bhejo (Search, OtherProfile, Match sab yahi serializer use karte
+        # hain). Sirf apni profile mein coordinates wapas aate hain.
+        data    = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is None or getattr(request.user, "id", None) != instance.user_id:
+            data.pop("latitude", None)
+            data.pop("longitude", None)
+        return data
 
     def validate_age(self, value):
         if value and value < 18:
@@ -287,7 +298,7 @@ class NearbyProfileSerializer(serializers.ModelSerializer):
         fields = [
             "id", "user_id", "name", "age", "gender", "photo_url",
             "interests", "position", "position_label",
-            "has_room", "distance", "is_live",
+            "has_room", "distance", "is_live", "area_label",
             "common_interests", "interest_score",
         ]
 

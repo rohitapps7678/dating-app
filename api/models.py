@@ -151,6 +151,9 @@ class Profile(models.Model):
 
     latitude    = models.FloatField(null=True, blank=True, db_index=True)
     longitude   = models.FloatField(null=True, blank=True, db_index=True)
+    # ✅ Approx area naam ("Sikandra, Agra") — cards pe exact coordinates ki
+    # jagah yehi dikhta hai. Client reverse-geocode karke nearby call ke saath bhejta hai.
+    area_label  = models.CharField(max_length=80, blank=True, default="")
     is_complete = models.BooleanField(default=False)
     is_live     = models.BooleanField(default=False, db_index=True)
     live_since  = models.DateTimeField(null=True, blank=True)

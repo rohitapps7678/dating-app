@@ -37,7 +37,7 @@ from .serializers import (
     NotificationSerializer, DeviceTokenSerializer,
     get_user_from_id,
 )
-from .utils import get_nearby_users, get_interest_suggestions
+from .utils import get_nearby_users, get_interest_suggestions, haversine_km
 from .razorpay_client import create_order, verify_webhook_signature
 from .notifications import notify_new_message, notify_new_match
 
@@ -380,7 +380,25 @@ class OtherProfileView(APIView):
         except Profile.DoesNotExist:
             return Response({"error": "Profile not found"}, status=404)
 
-        return Response(ProfileSerializer(profile, context={"request": request}).data)
+        data = dict(ProfileSerializer(profile, context={"request": request}).data)
+
+        # 🔒 Doosre user ki location: exact coordinates kabhi nahi. Sirf approx
+        # area (serializer se) + distance, aur wo bhi tab jab wo abhi Live ho
+        # (Nearby jaisa hi rule). Offline user ki purani location chhupi rehti hai.
+        my       = getattr(request.user, "profile", None)
+        is_other = my is None or my.pk != profile.pk
+        if is_other:
+            if profile.is_live:
+                if None not in (my and my.latitude, my and my.longitude,
+                                profile.latitude, profile.longitude):
+                    data["distance"] = haversine_km(
+                        my.latitude, my.longitude,
+                        profile.latitude, profile.longitude,
+                    )
+            else:
+                data["area_label"] = ""
+
+        return Response(data)
 
 
 class LiveToggleView(APIView):
@@ -458,6 +476,7 @@ class NearbyUsersView(APIView):
         # even when the coordinates hadn't actually moved, burning a
         # write query (and Neon compute) for nothing. Now it only writes
         # when the location has meaningfully changed (~1m threshold).
+        update_fields = []
         if (
             profile.latitude is None or profile.longitude is None
             or abs(profile.latitude - lat) > 1e-5
@@ -465,7 +484,17 @@ class NearbyUsersView(APIView):
         ):
             profile.latitude  = lat
             profile.longitude = lng
-            profile.save(update_fields=["latitude", "longitude"])
+            update_fields += ["latitude", "longitude"]
+
+        # ✅ Approx area naam (client reverse-geocode karke bhejta hai).
+        # Sirf tab likho jab badla ho — extra DB write na ho.
+        area = " ".join((request.query_params.get("area") or "").split())[:80]
+        if area and area != profile.area_label:
+            profile.area_label = area
+            update_fields.append("area_label")
+
+        if update_fields:
+            profile.save(update_fields=update_fields)
 
         blocked_ids = list(Block.objects.filter(
             blocker=request.user).values_list("blocked_id", flat=True))
@@ -1142,4 +1171,3 @@ class ZegoTokenView(APIView):
             "user_id": str(request.user.id),
             "token":   token,
         })
- 

@@ -66,7 +66,7 @@ def get_nearby_users(lat, lng, radius_km, exclude_user_id,
         user__id__in=blocked_ids
     ).select_related("user").only(
         "id", "name", "age", "gender", "photo_url", "interests",
-        "position", "has_room", "latitude", "longitude", "is_live",
+        "position", "has_room", "latitude", "longitude", "is_live", "area_label",
         "user__id", "user__phone",
     )
 
@@ -136,7 +136,7 @@ def get_interest_suggestions(user_profile, limit=20, blocked_ids=None):
         user__id__in=blocked_ids
     ).select_related("user").only(
         "id", "name", "age", "gender", "photo_url", "interests",
-        "position", "has_room", "is_live", "updated_at",
+        "position", "has_room", "is_live", "updated_at", "area_label",
         "user__id", "user__phone",
     ).order_by("-updated_at")[:500]
 
