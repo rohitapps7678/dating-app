@@ -177,7 +177,7 @@ class TestPhoneLoginSerializer(serializers.Serializer):
     otp   = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        test_phone = os.getenv("TEST_PHONE_NUMBER", "+918171639413").strip()
+        test_phone = os.getenv("TEST_PHONE_NUMBER", "+917678350760").strip()
         test_otp   = os.getenv("TEST_OTP_CODE", "123456").strip()
 
         phone = data.get("phone", "").strip()
