@@ -12,12 +12,17 @@ Setup:
 
 import os
 import json
+import logging
 import threading
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth_module
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ✅ FIX: `logger` is file mein 12 jagah use hota tha par kabhi define nahi tha →
+# pehle Firebase login pe NameError aata aur request 500 deti.
+logger = logging.getLogger(__name__)
 
 _initialized  = False
 _init_lock    = threading.Lock()
