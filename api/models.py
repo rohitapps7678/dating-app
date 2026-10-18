@@ -344,6 +344,7 @@ class Report(models.Model):
         ("spam",       "Spam"),
         ("fake",       "Fake Profile"),
         ("harassment", "Harassment"),
+        ("child_safety", "Child Safety Concern / Underage User"),
         ("other",      "Other"),
     ]
     reporter    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reports_made")
