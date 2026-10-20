@@ -13,7 +13,7 @@ from .views import (
     MessageDeleteView, ConversationClearView, ConversationDeleteView,
     NotificationListView, NotificationUnreadCountView,
     NotificationMarkReadView, NotificationMarkAllReadView, DeviceTokenView,
-    BlockView, ReportView,
+    BlockView, ReportView, FeedbackView,
     SubscriptionPlansView, SubscriptionStatusView,
     CreateSubscriptionOrderView, VerifySubscriptionPaymentView,
     RazorpayWebhookView, ClaimFreeTrialView,
@@ -62,6 +62,7 @@ urlpatterns = [
     path("block/",                 BlockView.as_view(),             name="block"),
     path("block/<str:user_id>/",   BlockView.as_view(),             name="unblock"),
     path("report/",                ReportView.as_view(),            name="report"),
+    path("feedback/",              FeedbackView.as_view(),          name="feedback"),
 
     # ── SUBSCRIPTION / RAZORPAY ──
     path("subscriptions/plans/",        SubscriptionPlansView.as_view(),         name="subscription-plans"),

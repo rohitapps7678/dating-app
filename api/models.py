@@ -347,11 +347,49 @@ class Report(models.Model):
         ("child_safety", "Child Safety Concern / Underage User"),
         ("other",      "Other"),
     ]
+    STATUS_CHOICES = [
+        ("open",     "Open"),
+        ("reviewed", "Reviewed"),
+        ("actioned", "Action taken"),
+        ("dismissed", "Dismissed"),
+    ]
     reporter    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reports_made")
     reported    = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reports_received")
     reason      = models.CharField(max_length=20, choices=REASON_CHOICES)
     description = models.TextField(max_length=500, blank=True)
+    status      = models.CharField(max_length=20, choices=STATUS_CHOICES, default="open")
     created_at  = models.DateTimeField(auto_now_add=True)
+
+
+class Feedback(models.Model):
+    """
+    General in-app feedback / safety concern (Google Play Child Safety
+    Standards: in-app feedback mechanism). User kisi doosre user ko
+    report kiye bina bhi ye bhej sakta hai (Profile → Safety & Feedback).
+    """
+    CATEGORY_CHOICES = [
+        ("general",      "General feedback"),
+        ("bug",          "Bug report"),
+        ("safety",       "Safety concern"),
+        ("child_safety", "Child safety concern"),
+        ("other",        "Other"),
+    ]
+    STATUS_CHOICES = [
+        ("open",     "Open"),
+        ("reviewed", "Reviewed"),
+        ("closed",   "Closed"),
+    ]
+    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="feedbacks")
+    category   = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="general")
+    message    = models.TextField(max_length=2000)
+    status     = models.CharField(max_length=20, choices=STATUS_CHOICES, default="open")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.category} by {self.user_id}"
 
 
 # ─────────────────────────────────────

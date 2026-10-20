@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import (
     User, Profile, Like, Match, Conversation,
-    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
+    Message, Block, Report, Feedback, INTEREST_CHOICES, POSITION_CHOICES,
     Subscription, PLAN_CONFIG, ConversationUserState,
     Notification, DeviceToken,
 )
@@ -599,6 +599,19 @@ class ReportSerializer(serializers.ModelSerializer):
             reported=reported,
             **validated_data
         )
+
+
+class FeedbackSerializer(serializers.ModelSerializer):
+    class Meta:
+        model        = Feedback
+        fields       = ["id", "category", "message", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate_message(self, value):
+        value = value.strip()
+        if len(value) < 10:
+            raise serializers.ValidationError("Please write at least 10 characters.")
+        return value
 
 
 # ─────────────────────────────────────────

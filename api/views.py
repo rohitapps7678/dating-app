@@ -20,7 +20,7 @@ from asgiref.sync import async_to_sync
 from .models import (
     User, Profile,
     Like, Match, Conversation,
-    Message, Block, Report, INTEREST_CHOICES, POSITION_CHOICES,
+    Message, Block, Report, Feedback, INTEREST_CHOICES, POSITION_CHOICES,
     Subscription, PLAN_CONFIG, PLAN_FEATURES, FREE_TRIAL_DAYS,
     ConversationUserState, Notification, DeviceToken,
 )
@@ -31,7 +31,7 @@ from .serializers import (
     ProfileSerializer, NearbyProfileSerializer,
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer, DeleteMessageSerializer,
-    BlockSerializer, ReportSerializer,
+    BlockSerializer, ReportSerializer, FeedbackSerializer,
     SubscriptionSerializer, CreateSubscriptionOrderSerializer,
     VerifySubscriptionPaymentSerializer,
     NotificationSerializer, DeviceTokenSerializer,
@@ -968,6 +968,32 @@ class ReportView(APIView):
         s.is_valid(raise_exception=True)
         s.save()
         return Response({"message": "Report submitted"}, status=201)
+
+
+class FeedbackThrottle(SimpleRateThrottle):
+    """Per-user limit so the feedback endpoint can't be spammed."""
+    scope = "feedback"
+    rate  = "10/hour"
+
+    def get_rate(self):
+        return self.rate
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated \
+            else self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class FeedbackView(APIView):
+    """POST /api/feedback/ — in-app feedback / safety concern (no other user needed)."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes   = [FeedbackThrottle]
+
+    def post(self, request):
+        s = FeedbackSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        s.save(user=request.user)
+        return Response({"message": "Feedback submitted"}, status=201)
 
 
 # ─────────────────────────────────────────

@@ -11,7 +11,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import User, Profile, Like, Match, Conversation, Message, Block, Report
+from .models import User, Profile, Like, Match, Conversation, Message, Block, Report, Feedback
 
 
 # ─────────────────────────────────────────
@@ -78,7 +78,14 @@ class AdminDashboardView(APIView):
         total_likes    = Like.objects.count()
         total_messages = Message.objects.count()
         total_reports  = Report.objects.filter().count()
-        pending_reports = Report.objects.count()  # all reports
+        pending_reports = Report.objects.filter(status="open").count()  # sirf open reports
+        child_safety_reports  = Report.objects.filter(
+            reason="child_safety", status="open"
+        ).count()
+        open_feedback         = Feedback.objects.filter(status="open").count()
+        open_child_safety_feedback = Feedback.objects.filter(
+            status="open", category__in=["child_safety", "safety"]
+        ).count()
 
         # Gender breakdown
         male_count   = Profile.objects.filter(gender='M').count()
@@ -120,6 +127,10 @@ class AdminDashboardView(APIView):
                 "total_likes":    total_likes,
                 "total_messages": total_messages,
                 "pending_reports": pending_reports,
+                # ✅ Child safety — pehle ye dekho
+                "child_safety_reports":        child_safety_reports,
+                "open_feedback":               open_feedback,
+                "open_child_safety_feedback":  open_child_safety_feedback,
             },
             "gender_breakdown": {
                 "male":   male_count,
@@ -312,7 +323,7 @@ class AdminUserDeleteView(APIView):
 # ─────────────────────────────────────────
 
 class AdminReportListView(APIView):
-    """GET /api/admin/reports/?page=1&reason="""
+    """GET /api/admin/reports/?page=1&reason=child_safety&status=open"""
     permission_classes = [IsAdminUser]
 
     def get(self, request):
@@ -323,6 +334,10 @@ class AdminReportListView(APIView):
         reason = request.query_params.get("reason", "")
         if reason:
             qs = qs.filter(reason=reason)
+
+        report_status = request.query_params.get("status", "")
+        if report_status:
+            qs = qs.filter(status=report_status)
 
         page      = int(request.query_params.get("page", 1))
         page_size = 20
@@ -351,6 +366,7 @@ class AdminReportListView(APIView):
                 "reported_photo": reported_photo,
                 "reason":        r.reason,
                 "description":   r.description,
+                "status":        r.status,
                 "created_at":    r.created_at.isoformat(),
             })
 
@@ -363,14 +379,116 @@ class AdminReportListView(APIView):
 
 
 class AdminReportDeleteView(APIView):
-    """DELETE /api/admin/reports/<report_id>/"""
+    """
+    PATCH  /api/admin/reports/<report_id>/   body: {"status": "reviewed" | "actioned" | "dismissed" | "open"}
+    DELETE /api/admin/reports/<report_id>/
+    """
     permission_classes = [IsAdminUser]
+
+    def patch(self, request, report_id):
+        new_status = request.data.get("status", "")
+        valid = [key for key, _ in Report.STATUS_CHOICES]
+        if new_status not in valid:
+            return Response(
+                {"error": f"status must be one of: {', '.join(valid)}"},
+                status=400,
+            )
+        try:
+            r = Report.objects.get(id=report_id)
+        except Report.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+        r.status = new_status
+        r.save(update_fields=["status"])
+        return Response({"success": True, "id": r.id, "status": r.status})
 
     def delete(self, request, report_id):
         try:
             Report.objects.get(id=report_id).delete()
             return Response({"success": True})
         except Report.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+
+
+# ─────────────────────────────────────────
+# FEEDBACK  (in-app feedback / safety concerns — Play Child Safety Standards)
+# ─────────────────────────────────────────
+
+class AdminFeedbackListView(APIView):
+    """GET /api/admin/feedback/?page=1&category=child_safety&status=open"""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        qs = Feedback.objects.select_related("user__profile").order_by("-created_at")
+
+        category = request.query_params.get("category", "")
+        if category:
+            qs = qs.filter(category=category)
+
+        fb_status = request.query_params.get("status", "")
+        if fb_status:
+            qs = qs.filter(status=fb_status)
+
+        try:
+            page = max(int(request.query_params.get("page", 1)), 1)
+        except ValueError:
+            page = 1
+        page_size = 20
+        total     = qs.count()
+        qs        = qs[(page - 1) * page_size: page * page_size]
+
+        results = []
+        for f in qs:
+            try:
+                user_name = f.user.profile.name or f.user.phone
+            except Profile.DoesNotExist:
+                user_name = f.user.phone
+
+            results.append({
+                "id":         f.id,
+                "user_id":    str(f.user.id),
+                "user_name":  user_name,
+                "category":   f.category,
+                "message":    f.message,
+                "status":     f.status,
+                "created_at": f.created_at.isoformat(),
+            })
+
+        return Response({
+            "total":   total,
+            "page":    page,
+            "pages":   (total + page_size - 1) // page_size,
+            "results": results,
+        })
+
+
+class AdminFeedbackDetailView(APIView):
+    """
+    PATCH  /api/admin/feedback/<feedback_id>/   body: {"status": "reviewed" | "closed" | "open"}
+    DELETE /api/admin/feedback/<feedback_id>/
+    """
+    permission_classes = [IsAdminUser]
+
+    def patch(self, request, feedback_id):
+        new_status = request.data.get("status", "")
+        valid = [key for key, _ in Feedback.STATUS_CHOICES]
+        if new_status not in valid:
+            return Response(
+                {"error": f"status must be one of: {', '.join(valid)}"},
+                status=400,
+            )
+        try:
+            f = Feedback.objects.get(id=feedback_id)
+        except Feedback.DoesNotExist:
+            return Response({"error": "Not found"}, status=404)
+        f.status = new_status
+        f.save(update_fields=["status"])
+        return Response({"success": True, "id": f.id, "status": f.status})
+
+    def delete(self, request, feedback_id):
+        try:
+            Feedback.objects.get(id=feedback_id).delete()
+            return Response({"success": True})
+        except Feedback.DoesNotExist:
             return Response({"error": "Not found"}, status=404)
 
 

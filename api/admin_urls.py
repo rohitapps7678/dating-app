@@ -10,6 +10,7 @@ from .admin_views import (
     AdminDashboardView,
     AdminUserListView, AdminUserDetailView, AdminUserDeleteView,
     AdminReportListView, AdminReportDeleteView,
+    AdminFeedbackListView, AdminFeedbackDetailView,
     AdminMatchListView, AdminMatchDeleteView,
     AdminMessageListView,
     AdminStatsView,
@@ -32,6 +33,10 @@ urlpatterns = [
     # Reports
     path("reports/",               AdminReportListView.as_view(),  name="admin-reports"),
     path("reports/<int:report_id>/", AdminReportDeleteView.as_view(), name="admin-report-delete"),
+
+    # Feedback (in-app feedback / safety concerns)
+    path("feedback/",                  AdminFeedbackListView.as_view(),   name="admin-feedback"),
+    path("feedback/<int:feedback_id>/", AdminFeedbackDetailView.as_view(), name="admin-feedback-detail"),
 
     # Matches
     path("matches/",               AdminMatchListView.as_view(),   name="admin-matches"),
