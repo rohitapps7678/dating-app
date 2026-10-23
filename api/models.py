@@ -20,11 +20,13 @@ POSITION_CHOICES = [
 ]
 
 # ─────────────────────────────────────
-# SUBSCRIPTION PLANS  (Razorpay)
+# SUBSCRIPTION PLANS  (Google Play Billing)
 # ─────────────────────────────────────
-# ✅ Prices in whole rupees — converted to paise (x100) wherever Razorpay
-# needs an amount. Change prices/durations here only; everything else
-# (order creation, plan listing API, Flutter screen) reads from this.
+# ✅ product_id = Play Console → Monetize → Subscriptions → Product ID.
+# Har plan ek alag subscription product hai (ek base plan wala).
+# ⚠️ price_inr yahan sirf DISPLAY FALLBACK hai — asli price Play Console
+# mein set hota hai aur app Play se localized price padhta hai. Console
+# mein price badalne par yahan kuch badalna zaroori nahi.
 
 PLAN_CHOICES = [
     ("week",         "1 Week"),
@@ -32,10 +34,9 @@ PLAN_CHOICES = [
     ("three_months", "3 Months"),
 ]
 
+# ✅ Sirf ek plan: 1 Month. (PLAN_CHOICES purane rows ke liye waisa hi rehne diya.)
 PLAN_CONFIG = {
-    "week":         {"label": "1 Week",  "price_inr": 49,  "duration_days": 7,  "tag": None},
-    "month":        {"label": "1 Month", "price_inr": 99,  "duration_days": 30, "tag": "MOST POPULAR"},
-    "three_months": {"label": "3 Months","price_inr": 199, "duration_days": 90, "tag": "BEST VALUE"},
+    "month": {"label": "1 Month", "product_id": "opentalk_month", "price_inr": 4, "duration_days": 30, "tag": None},
 }
 
 PLAN_FEATURES = [
@@ -45,7 +46,7 @@ PLAN_FEATURES = [
     "Ad-Free Experience",
 ]
 
-FREE_TRIAL_DAYS = 1
+FREE_TRIAL_DAYS = 7   # ✅ auto-starts for every user (no card), see access.py
 
 
 class UserManager(BaseUserManager):
@@ -471,17 +472,22 @@ class Notification(models.Model):
 
 
 # ─────────────────────────────────────
-# SUBSCRIPTION  (Razorpay)
+# SUBSCRIPTION  (Free trial + Google Play Billing)
 # ─────────────────────────────────────
 
 class Subscription(models.Model):
     """
-    Ek row = ek Razorpay order attempt.
-    - created  : order Razorpay pe ban gaya, payment pending hai
-    - paid     : signature verify ho gayi, subscription active hai
-    - failed   : payment fail hua ya signature verify nahi hui
-    - cancelled: order abandon ho gaya (app close, user ne cancel kiya)
+    Ek row = ek trial ya ek Google Play purchase token.
+    - paid     : access active (trial ya Play subscription, expires_at tak)
+    - cancelled: Play ne expire/hold/refund kiya — access nahi
+    - created / failed : legacy Razorpay rows (ab use nahi hote)
+    Access ka rule hamesha: status="paid" AND expires_at > now.
     """
+    SOURCE_CHOICES = [
+        ("trial",       "Free trial"),
+        ("google_play", "Google Play"),
+        ("razorpay",    "Razorpay (legacy)"),
+    ]
     STATUS_CHOICES = [
         ("created",   "Created"),
         ("paid",      "Paid"),
@@ -494,12 +500,20 @@ class Subscription(models.Model):
     amount   = models.PositiveIntegerField()             # paise
     currency = models.CharField(max_length=10, default="INR")
 
-    razorpay_order_id   = models.CharField(max_length=100, unique=True)
+    # legacy (Razorpay) — nullable so Play/trial rows don't need a fake id
+    razorpay_order_id   = models.CharField(max_length=100, unique=True, null=True, blank=True)
     razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)
     razorpay_signature  = models.CharField(max_length=255, blank=True, null=True)
 
     status   = models.CharField(max_length=10, choices=STATUS_CHOICES, default="created", db_index=True)
-    is_trial = models.BooleanField(default=False)   # ✅ free 1-day trial, ₹0, no Razorpay order
+    is_trial = models.BooleanField(default=False)   # ✅ free 7-day trial, ₹0, no payment
+    source   = models.CharField(max_length=12, choices=SOURCE_CHOICES, default="razorpay")
+
+    # ── Google Play ──
+    google_purchase_token = models.CharField(max_length=500, unique=True, null=True, blank=True)
+    google_product_id     = models.CharField(max_length=100, blank=True, default="")
+    google_order_id       = models.CharField(max_length=100, blank=True, default="")
+    auto_renewing         = models.BooleanField(default=False)
 
     starts_at  = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
@@ -512,6 +526,12 @@ class Subscription(models.Model):
         # ✅ "user ka latest paid, unexpired subscription" query isi index
         # se serve hoti hai — is_premium check har request pe chal sakta hai.
         indexes = [models.Index(fields=["user", "-created_at"])]
+        constraints = [
+            # ✅ ek user ko zindagi mein sirf ek hi free trial
+            models.UniqueConstraint(
+                fields=["user"], condition=models.Q(is_trial=True),
+                name="one_trial_per_user"),
+        ]
 
     def __str__(self):
         return f"{self.user.phone} — {self.plan} ({self.status})"

@@ -15,8 +15,7 @@ from .views import (
     NotificationMarkReadView, NotificationMarkAllReadView, DeviceTokenView,
     BlockView, ReportView, FeedbackView,
     SubscriptionPlansView, SubscriptionStatusView,
-    CreateSubscriptionOrderView, VerifySubscriptionPaymentView,
-    RazorpayWebhookView, ClaimFreeTrialView,
+    VerifyGooglePurchaseView, GooglePlayRTDNView,
 )
 
 urlpatterns = [
@@ -64,13 +63,11 @@ urlpatterns = [
     path("report/",                ReportView.as_view(),            name="report"),
     path("feedback/",              FeedbackView.as_view(),          name="feedback"),
 
-    # ── SUBSCRIPTION / RAZORPAY ──
-    path("subscriptions/plans/",        SubscriptionPlansView.as_view(),         name="subscription-plans"),
-    path("subscriptions/status/",       SubscriptionStatusView.as_view(),        name="subscription-status"),
-    path("subscriptions/create-order/", CreateSubscriptionOrderView.as_view(),   name="subscription-create-order"),
-    path("subscriptions/verify/",       VerifySubscriptionPaymentView.as_view(), name="subscription-verify"),
-    path("subscriptions/claim-trial/",  ClaimFreeTrialView.as_view(),            name="subscription-claim-trial"),
-    path("subscriptions/webhook/",      RazorpayWebhookView.as_view(),           name="subscription-webhook"),
+    # ── SUBSCRIPTION / GOOGLE PLAY ──
+    path("subscriptions/plans/",         SubscriptionPlansView.as_view(),   name="subscription-plans"),
+    path("subscriptions/status/",        SubscriptionStatusView.as_view(),  name="subscription-status"),
+    path("subscriptions/google/verify/", VerifyGooglePurchaseView.as_view(), name="subscription-google-verify"),
+    path("subscriptions/google/rtdn/",   GooglePlayRTDNView.as_view(),      name="subscription-google-rtdn"),
 
     # ── NOTIFICATIONS ──
     path("notifications/",                      NotificationListView.as_view(),       name="notification-list"),

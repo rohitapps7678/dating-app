@@ -1,3 +1,6 @@
+import base64
+import hmac
+import json
 import logging
 
 from rest_framework import status, generics, permissions, serializers
@@ -32,13 +35,13 @@ from .serializers import (
     LikeSerializer, MatchSerializer,
     ConversationSerializer, MessageSerializer, DeleteMessageSerializer,
     BlockSerializer, ReportSerializer, FeedbackSerializer,
-    SubscriptionSerializer, CreateSubscriptionOrderSerializer,
-    VerifySubscriptionPaymentSerializer,
+    SubscriptionSerializer, VerifyGooglePurchaseSerializer,
     NotificationSerializer, DeviceTokenSerializer,
     get_user_from_id,
 )
 from .utils import get_nearby_users, get_interest_suggestions, haversine_km
-from .razorpay_client import create_order, verify_webhook_signature
+from .access import HasActiveAccess, user_has_access, ensure_trial
+from . import google_play
 from .notifications import notify_new_message, notify_new_match
 
 logger = logging.getLogger(__name__)
@@ -157,7 +160,7 @@ class InterestsListView(APIView):
 
 
 class InterestSuggestionsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def get(self, request):
         try:
@@ -362,7 +365,7 @@ class ProfileView(APIView):
 
 
 class OtherProfileView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def get(self, request, user_id):
         # ✅ FIX: get_user_from_id dono handle karta hai —
@@ -421,7 +424,7 @@ class LiveToggleView(APIView):
 # ─────────────────────────────────────────
 
 class SearchView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def get(self, request):
         query   = request.query_params.get("q", "").strip()
@@ -459,7 +462,7 @@ class SearchView(APIView):
 # ─────────────────────────────────────────
 
 class NearbyUsersView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def get(self, request):
         try:
@@ -530,7 +533,7 @@ class NearbyUsersView(APIView):
 # ─────────────────────────────────────────
 
 class LikeView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def post(self, request):
         s = LikeSerializer(data=request.data, context={"request": request})
@@ -559,7 +562,7 @@ class StartConversationView(APIView):
     Match/Conversation tables (Match ab sirf "do users ke beech connection"
     ka record hai, mutual-like hona zaroori nahi raha).
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def post(self, request):
         other_id = request.data.get("user_id") or request.data.get("receiver_id")
@@ -588,7 +591,7 @@ class StartConversationView(APIView):
 
 
 class MatchListView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
     serializer_class   = MatchSerializer
     pagination_class    = FastPagination
 
@@ -615,7 +618,7 @@ class MatchListView(generics.ListAPIView):
 # ─────────────────────────────────────────
 
 class ConversationListView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
     serializer_class   = ConversationSerializer
     pagination_class    = FastPagination
 
@@ -670,7 +673,7 @@ class ConversationListView(generics.ListAPIView):
 
 
 class MessageListView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def _get_conv(self, request, conv_id):
         try:
@@ -743,7 +746,7 @@ class MessageDeleteView(APIView):
                       deleted" ban jaata hai aur connected WebSocket
                       clients ko turant broadcast ho jaata hai.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
 
     def delete(self, request, conv_id, message_id):
         try:
@@ -997,175 +1000,132 @@ class FeedbackView(APIView):
 
 
 # ─────────────────────────────────────────
-# SUBSCRIPTION  (Razorpay)
+# SUBSCRIPTION  (7-day free trial + Google Play Billing)
 # ─────────────────────────────────────────
 
 class SubscriptionPlansView(APIView):
-    """Public — Flutter paywall screen loads this before login-gating anything."""
+    """Public — paywall loads this; real prices come from Play on the device."""
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         plans = [
             {
                 "id":            key,
+                "product_id":    cfg["product_id"],
                 "label":         cfg["label"],
-                "price_inr":     cfg["price_inr"],
+                "price_inr":     cfg["price_inr"],      # display fallback only
                 "duration_days": cfg["duration_days"],
                 "tag":           cfg["tag"],
                 "features":      PLAN_FEATURES,
             }
             for key, cfg in PLAN_CONFIG.items()
         ]
-        return Response({
-            "plans":            plans,
-            "razorpay_key_id":  settings.RAZORPAY_KEY_ID,
-            "free_trial_days":  FREE_TRIAL_DAYS,
-        })
+        return Response({"plans": plans, "free_trial_days": FREE_TRIAL_DAYS})
 
 
 class SubscriptionStatusView(APIView):
+    """
+    App calls this on login / app-resume. First call for a brand-new user
+    also starts their 7-day trial (user_has_access → ensure_trial).
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        has_access = user_has_access(request.user)
+
+        # Access nahi mila? Shayad Play ne renew kar diya aur RTDN abhi tak
+        # nahi aaya — last Play purchase ko Google se dobara check kar lo.
+        if not has_access:
+            last = (Subscription.objects
+                    .filter(user=request.user, source="google_play",
+                            google_purchase_token__isnull=False)
+                    .order_by("-created_at").first())
+            if last:
+                try:
+                    google_play.sync_purchase(
+                        last.google_purchase_token, user=request.user)
+                    has_access = user_has_access(request.user)
+                except google_play.GooglePlayError:
+                    pass
+
         sub = request.user.active_subscription
-        has_used_trial = Subscription.objects.filter(
-            user=request.user, is_trial=True).exists()
         return Response({
-            "is_premium":     sub is not None,
+            "has_access":     has_access,
+            "is_premium":     sub is not None and not sub.is_trial,
             "subscription":   SubscriptionSerializer(sub).data if sub else None,
-            "has_used_trial": has_used_trial,
+            "has_used_trial": Subscription.objects.filter(
+                user=request.user, is_trial=True).exists(),
+            "trial_days":     FREE_TRIAL_DAYS,
         })
 
 
-class ClaimFreeTrialView(APIView):
+class VerifyGooglePurchaseView(APIView):
     """
-    ₹0, no Razorpay order — activates FREE_TRIAL_DAYS of premium once per
-    user. This is what backs the '1-DAY FREE TRIAL' banner on the paywall.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        if Subscription.objects.filter(user=request.user, is_trial=True).exists():
-            return Response({"error": "Free trial already used"}, status=400)
-        if request.user.is_premium:
-            return Response({"error": "Aap already Premium ho"}, status=400)
-
-        now = timezone.now()
-        sub = Subscription.objects.create(
-            user=request.user,
-            plan="week",
-            amount=0,
-            razorpay_order_id=f"trial_{request.user.id}_{int(now.timestamp())}",
-            status="paid",
-            is_trial=True,
-            starts_at=now,
-            expires_at=now + timedelta(days=FREE_TRIAL_DAYS),
-        )
-        return Response({
-            "message":      f"{FREE_TRIAL_DAYS}-day free trial activated!",
-            "subscription": SubscriptionSerializer(sub).data,
-        }, status=201)
-
-
-class CreateSubscriptionOrderView(APIView):
-    """
-    Step 1 of checkout — creates a Razorpay order + a local 'created'
-    Subscription row, and returns everything the Flutter Razorpay SDK
-    needs to open the checkout sheet.
+    App → POST {purchase_token, product_id} right after Play Billing says
+    "purchased" (or on restore). We re-check with Google; only then is the
+    row marked paid.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        s = CreateSubscriptionOrderSerializer(data=request.data)
+        s = VerifyGooglePurchaseSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        plan = s.validated_data["plan"]
-        cfg  = PLAN_CONFIG[plan]
-        amount_paise = cfg["price_inr"] * 100
-
         try:
-            order = create_order(
-                amount_paise,
-                receipt=f"sub_{request.user.id}_{int(timezone.now().timestamp())}",
-                notes={"user_id": str(request.user.id), "plan": plan},
-            )
-        except Exception as e:
-            return Response({"error": f"Razorpay order banane mein problem: {e}"}, status=502)
+            sub, parsed = google_play.sync_purchase(
+                s.validated_data["purchase_token"], user=request.user)
+        except google_play.GooglePlayError as e:
+            return Response({"error": str(e)}, status=400)
 
-        subscription = Subscription.objects.create(
-            user=request.user,
-            plan=plan,
-            amount=amount_paise,
-            razorpay_order_id=order["id"],
-        )
-
-        email = request.user.phone if "@" in request.user.phone else ""
-        return Response({
-            "order_id":         order["id"],
-            "amount":           amount_paise,
-            "currency":         "INR",
-            "key_id":           settings.RAZORPAY_KEY_ID,
-            "plan":             plan,
-            "subscription_id":  subscription.id,
-            "user_email":       email,
-        }, status=201)
-
-
-class VerifySubscriptionPaymentView(APIView):
-    """
-    Step 2 of checkout — client calls this right after Razorpay's
-    checkout sheet reports success. Signature is verified server-side
-    before the subscription is ever marked 'paid'.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        s = VerifySubscriptionPaymentSerializer(
-            data=request.data, context={"request": request})
-        s.is_valid(raise_exception=True)
-        subscription = s.validated_data["subscription"]
-
-        if subscription.status != "paid":
-            subscription.mark_paid(
-                s.validated_data["razorpay_payment_id"],
-                s.validated_data["razorpay_signature"],
-            )
+        if sub is None or not parsed["entitled"]:
+            return Response(
+                {"error": "Purchase is not active (pending, expired or refunded)."},
+                status=400)
 
         return Response({
-            "message":      "Payment verified. Subscription activated!",
-            "subscription": SubscriptionSerializer(subscription).data,
+            "message":      "Subscription activated!",
+            "subscription": SubscriptionSerializer(sub).data,
         })
 
 
-class RazorpayWebhookView(APIView):
+class GooglePlayRTDNView(APIView):
     """
-    Optional but strongly recommended for production: Razorpay calls this
-    directly from its servers, so a payment still gets recorded even if
-    the app crashes/loses network right after checkout (before it could
-    call /verify/). Configure this URL in Razorpay Dashboard → Settings →
-    Webhooks, subscribe to the 'payment.captured' event, and set the same
-    secret as RAZORPAY_WEBHOOK_SECRET in your env.
+    Pub/Sub PUSH endpoint for Play "Real-time developer notifications".
+    Cloud Console → Pub/Sub → subscription → Push URL:
+        https://<host>/api/subscriptions/google/rtdn/?token=<GOOGLE_PLAY_RTDN_TOKEN>
+    Handles renew / cancel / expire / hold / refund by re-syncing from Google.
     """
     permission_classes     = [permissions.AllowAny]
     authentication_classes = []
 
     def post(self, request):
-        signature = request.headers.get("X-Razorpay-Signature", "")
-        payload   = request.body.decode("utf-8")
+        expected = getattr(settings, "GOOGLE_PLAY_RTDN_TOKEN", "")
+        given    = request.query_params.get("token", "")
+        if not expected or not hmac.compare_digest(expected, given):
+            return Response(status=403)
 
-        if not verify_webhook_signature(payload, signature):
-            return Response({"error": "Invalid signature"}, status=400)
+        try:
+            raw     = request.data["message"]["data"]
+            payload = json.loads(base64.b64decode(raw).decode("utf-8"))
+        except Exception:
+            return Response(status=400)
 
-        event = request.data.get("event")
-        if event == "payment.captured":
-            payment    = request.data["payload"]["payment"]["entity"]
-            order_id   = payment["order_id"]
-            payment_id = payment["id"]
+        if payload.get("packageName") != settings.GOOGLE_PLAY_PACKAGE_NAME:
+            return Response(status=200)        # not ours — ack & ignore
 
-            sub = Subscription.objects.filter(razorpay_order_id=order_id).first()
-            if sub and sub.status != "paid":
-                sub.mark_paid(payment_id, signature="webhook-verified")
+        token = (
+            (payload.get("subscriptionNotification") or {}).get("purchaseToken")
+            or (payload.get("voidedPurchaseNotification") or {}).get("purchaseToken")
+        )
+        if not token:                          # testNotification etc.
+            return Response(status=200)
 
-        return Response({"status": "ok"})
+        try:
+            google_play.sync_purchase(token)
+        except google_play.GooglePlayError:
+            logger.exception("RTDN sync failed")
+            return Response(status=500)        # Pub/Sub will retry
+        return Response(status=200)
+
 
 class ZegoTokenView(APIView):
     """
@@ -1181,7 +1141,7 @@ class ZegoTokenView(APIView):
     milta hai jismein already current user ka ID embed hai, isliye koi
     user doosre ke naam se call join nahi kar sakta.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveAccess]
  
     def get(self, request):
         try:

@@ -615,7 +615,7 @@ class FeedbackSerializer(serializers.ModelSerializer):
 
 
 # ─────────────────────────────────────────
-# SUBSCRIPTION  (Razorpay)
+# SUBSCRIPTION  (Google Play)
 # ─────────────────────────────────────────
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -625,54 +625,17 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         model  = Subscription
         fields = [
             "id", "plan", "plan_label", "amount", "currency",
-            "status", "is_trial", "starts_at", "expires_at", "created_at",
+            "status", "is_trial", "source", "auto_renewing",
+            "starts_at", "expires_at", "created_at",
         ]
         read_only_fields = fields
 
     def get_plan_label(self, obj):
+        if obj.is_trial:
+            return "Free Trial"
         return PLAN_CONFIG.get(obj.plan, {}).get("label", obj.plan)
 
 
-class CreateSubscriptionOrderSerializer(serializers.Serializer):
-    plan = serializers.ChoiceField(choices=list(PLAN_CONFIG.keys()))
-
-
-class VerifySubscriptionPaymentSerializer(serializers.Serializer):
-    """
-    Frontend Razorpay checkout success ke baad ye teeno fields deta hai.
-    Signature verify karke hi subscription 'paid' mark hoti hai — kabhi
-    bhi client se aaye 'success' flag pe bharosa nahi karte.
-    """
-    razorpay_order_id   = serializers.CharField()
-    razorpay_payment_id = serializers.CharField()
-    razorpay_signature  = serializers.CharField()
-
-    def validate(self, data):
-        subscription = Subscription.objects.filter(
-            razorpay_order_id=data["razorpay_order_id"]
-        ).first()
-        if not subscription:
-            raise serializers.ValidationError("Order not found")
-
-        request = self.context["request"]
-        if subscription.user != request.user:
-            raise serializers.ValidationError("Not allowed")
-
-        # Idempotent — agar webhook ne already mark_paid kar diya ho
-        if subscription.status == "paid":
-            data["subscription"] = subscription
-            return data
-
-        from .razorpay_client import verify_payment_signature
-        valid = verify_payment_signature(
-            data["razorpay_order_id"],
-            data["razorpay_payment_id"],
-            data["razorpay_signature"],
-        )
-        if not valid:
-            subscription.status = "failed"
-            subscription.save(update_fields=["status", "updated_at"])
-            raise serializers.ValidationError("Payment verification failed")
-
-        data["subscription"] = subscription
-        return data
+class VerifyGooglePurchaseSerializer(serializers.Serializer):
+    purchase_token = serializers.CharField(max_length=500)
+    product_id     = serializers.CharField(max_length=100, required=False, allow_blank=True)
