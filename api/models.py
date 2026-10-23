@@ -36,7 +36,7 @@ PLAN_CHOICES = [
 
 # ✅ Sirf ek plan: 1 Month. (PLAN_CHOICES purane rows ke liye waisa hi rehne diya.)
 PLAN_CONFIG = {
-    "month": {"label": "1 Month", "product_id": "opentalk_month", "price_inr": 4, "duration_days": 30, "tag": None},
+    "month": {"label": "1 Month", "product_id": "opentalk_week", "price_inr": 4, "duration_days": 30, "tag": None},
 }
 
 PLAN_FEATURES = [

@@ -266,6 +266,11 @@ cloudinary.config(
 ZEGO_APP_ID = int(os.environ.get("ZEGO_APP_ID", "0"))
 ZEGO_SERVER_SECRET = os.environ.get("ZEGO_SERVER_SECRET", "")  # exactly 32 chars
 ZEGO_TOKEN_EFFECTIVE_SECONDS = 60 * 60 * 24  # 24 hours — optional, ye default hai
+
+# ── GOOGLE PLAY BILLING ──
+GOOGLE_PLAY_PACKAGE_NAME         = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.opentalk.social")
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_PLAY_RTDN_TOKEN           = os.getenv("GOOGLE_PLAY_RTDN_TOKEN", "")
  
 
 # ── MEDIA (local fallback) ──
