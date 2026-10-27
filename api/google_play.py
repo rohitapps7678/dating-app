@@ -17,6 +17,7 @@ Env / settings needed:
 """
 import json
 import logging
+import os
 
 from django.conf import settings
 from django.db import transaction
@@ -44,44 +45,88 @@ class GooglePlayError(Exception):
     pass
 
 
-def _client():
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
+def _package_name():
+    pkg = (getattr(settings, "GOOGLE_PLAY_PACKAGE_NAME", "")
+           or os.environ.get("GOOGLE_PLAY_PACKAGE_NAME", ""))
+    if not pkg:
+        raise GooglePlayError("GOOGLE_PLAY_PACKAGE_NAME is not configured on the server")
+    return pkg
 
-    raw = getattr(settings, "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+
+def _client():
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except ImportError:
+        logger.exception("Google API libraries missing")
+        raise GooglePlayError(
+            "Server is missing google-api-python-client / google-auth")
+
+    raw = (getattr(settings, "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+           or os.environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", ""))
     if not raw:
         raise GooglePlayError("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON not configured")
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(raw), scopes=SCOPES)
-    return build("androidpublisher", "v3", credentials=creds, cache_discovery=False)
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        logger.exception("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not valid JSON")
+        raise GooglePlayError("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not valid JSON")
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=SCOPES)
+        return build("androidpublisher", "v3", credentials=creds,
+                     cache_discovery=False)
+    except Exception:
+        logger.exception("Could not build Google Play client")
+        raise GooglePlayError("Service account key is invalid")
 
 
 def fetch_subscription(purchase_token):
-    from googleapiclient.errors import HttpError
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        logger.exception("google-api-python-client not installed")
+        raise GooglePlayError(
+            "Server is missing google-api-python-client / google-auth")
+    package = _package_name()
     try:
         return (
             _client().purchases().subscriptionsv2()
-            .get(packageName=settings.GOOGLE_PLAY_PACKAGE_NAME, token=purchase_token)
+            .get(packageName=package, token=purchase_token)
             .execute()
         )
+    except GooglePlayError:
+        raise
     except HttpError as e:
         status = getattr(e.resp, "status", None)
-        logger.warning("Play API error %s for token …%s", status, purchase_token[-6:])
+        # full Google reply goes to the server log — this is what tells you
+        # whether it is permissions, wrong package, bad token, etc.
+        logger.error("Play API HttpError %s for token ...%s: %s",
+                     status, purchase_token[-6:], e.content)
         if status in (400, 404, 410):
             raise GooglePlayError("Invalid or expired purchase token")
+        if status in (401, 403):
+            raise GooglePlayError(
+                "Server is not authorised on Google Play. Give the service "
+                "account 'View financial data' + 'Manage orders and "
+                "subscriptions' in Play Console > Users and permissions.")
         raise GooglePlayError("Google Play is unavailable, try again")
+    except Exception:
+        # google.auth RefreshError / TransportError etc.
+        logger.exception("Play API call failed for token ...%s", purchase_token[-6:])
+        raise GooglePlayError("Could not authenticate with Google Play")
 
 
 def acknowledge(product_id, purchase_token):
     """Unacknowledged purchases are auto-refunded by Google after 3 days."""
     try:
         (_client().purchases().subscriptions()
-         .acknowledge(packageName=settings.GOOGLE_PLAY_PACKAGE_NAME,
+         .acknowledge(packageName=_package_name(),
                       subscriptionId=product_id, token=purchase_token, body={})
          .execute())
-    except Exception:
+    except Exception as e:
         # already acknowledged by the client (completePurchase) → harmless
-        logger.info("acknowledge skipped for …%s", purchase_token[-6:])
+        logger.info("acknowledge skipped for ...%s: %s", purchase_token[-6:], e)
 
 
 def parse_subscription(data):
@@ -89,7 +134,9 @@ def parse_subscription(data):
     if not items:
         raise GooglePlayError("Purchase has no line items")
     item = max(items, key=lambda i: i.get("expiryTime", ""))
-    expiry = parse_datetime(item["expiryTime"])
+    expiry = parse_datetime(item.get("expiryTime") or "")
+    if expiry is None:
+        raise GooglePlayError("Purchase has no expiry time")
     start = parse_datetime(data["startTime"]) if data.get("startTime") else None
     state = data.get("subscriptionState", "")
     ext = data.get("externalAccountIdentifiers") or {}
