@@ -36,7 +36,7 @@ PLAN_CHOICES = [
 
 # ✅ Sirf ek plan: 1 Month. (PLAN_CHOICES purane rows ke liye waisa hi rehne diya.)
 PLAN_CONFIG = {
-    "month": {"label": "1 Month", "product_id": "opentalk_week", "price_inr": 4, "duration_days": 30, "tag": None},
+    "month": {"label": "1 Month", "product_id": "opentalk_week", "price_inr": 99, "duration_days": 30, "tag": None},
 }
 
 PLAN_FEATURES = [
@@ -46,7 +46,7 @@ PLAN_FEATURES = [
     "Ad-Free Experience",
 ]
 
-FREE_TRIAL_DAYS = 7   # ✅ auto-starts for every user (no card), see access.py
+FREE_TRIAL_DAYS = 1   # ✅ auto-starts for every user (no card), see access.py
 
 
 class UserManager(BaseUserManager):
