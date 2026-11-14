@@ -34,9 +34,13 @@ PLAN_CHOICES = [
     ("three_months", "3 Months"),
 ]
 
-# ✅ Sirf ek plan: 1 Month. (PLAN_CHOICES purane rows ke liye waisa hi rehne diya.)
+# ✅ 3 plans (design ke mutabiq). product_id = Play Console ka Product ID, EXACT.
+# ⚠️ "opentalk_week" Console mein MONTHLY base plan ke saath bana hai, isliye
+# wo MONTH plan se jura hai (naam confusing hai par chalta hai).
 PLAN_CONFIG = {
-    "month": {"label": "1 Month", "product_id": "opentalk_week", "price_inr": 99, "duration_days": 30, "tag": None},
+    "week":         {"label": "1 Week",   "product_id": "opentalk_1week",   "price_inr": 49,  "duration_days": 7,  "tag": None},
+    "month":        {"label": "1 Month",  "product_id": "opentalk_week",    "price_inr": 99,  "duration_days": 30, "tag": "MOST POPULAR"},
+    "three_months": {"label": "3 Months", "product_id": "opentalk_3months", "price_inr": 249, "duration_days": 90, "tag": "BEST VALUE"},
 }
 
 PLAN_FEATURES = [

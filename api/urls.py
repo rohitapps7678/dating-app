@@ -9,6 +9,7 @@ from .views import (
     PhotoUploadView, LiveToggleView,
     SearchView, NearbyUsersView,
     LikeView, MatchListView,
+    AccountDeleteView,
     ConversationListView, MessageListView, StartConversationView,
     MessageDeleteView, ConversationClearView, ConversationDeleteView,
     NotificationListView, NotificationUnreadCountView,
@@ -30,6 +31,9 @@ urlpatterns = [
     # ── AUTH (Username + Password) ──
     path("auth/register/",         RegisterView.as_view(),          name="register"),
     path("auth/login/",            LoginView.as_view(),             name="login"),
+
+    # ── ACCOUNT ──
+    path("account/delete/",        AccountDeleteView.as_view(),     name="account-delete"),
 
     # ── PROFILE ──
     path("profile/",               ProfileView.as_view(),           name="my-profile"),

@@ -2,6 +2,7 @@ import base64
 import hmac
 import json
 import logging
+import re
 
 from rest_framework import status, generics, permissions, serializers
 from rest_framework.views import APIView
@@ -10,6 +11,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.db import transaction
 from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
 from django.conf import settings
@@ -288,6 +290,75 @@ class LogoutView(APIView):
             return Response({"message": "Logged out"})
         except Exception:
             return Response({"error": "Invalid token"}, status=400)
+
+
+# ─────────────────────────────────────────
+# DELETE ACCOUNT  (Google Play: in-app account deletion)
+# ─────────────────────────────────────────
+
+def _cloudinary_public_id(photo_url):
+    """
+    "https://res.cloudinary.com/<cloud>/image/upload/v123/folder/name.jpg"
+    → "folder/name". Cloudinary URL nahi hai toh None.
+    """
+    if not photo_url or "res.cloudinary.com" not in photo_url or "/upload/" not in photo_url:
+        return None
+    tail  = photo_url.split("/upload/", 1)[1].split("?", 1)[0]
+    parts = tail.split("/")
+    if parts and re.match(r"^v\d+$", parts[0]):   # version segment hata do
+        parts = parts[1:]
+    if not parts:
+        return None
+    return "/".join(parts).rsplit(".", 1)[0]
+
+
+class AccountDeleteView(APIView):
+    """
+    DELETE /api/account/delete/
+
+    User ka account + uska saara data permanently delete karta hai.
+    Cascade se ye sab ud jaata hai: Profile, Likes, Matches, Conversations
+    (aur unke Messages — dusre user ke liye bhi), Blocks, Reports, Feedback,
+    DeviceTokens, Notifications, Subscriptions (DB rows).
+
+    ⚠️ Google Play subscription yahan se cancel NAHI hoti — wo sirf user
+    Play Store se cancel kar sakta hai (app dialog mein warning dikhata hai).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        user      = request.user
+        user_id   = str(user.id)
+        photo_url = None
+        try:
+            photo_url = user.profile.photo_url
+        except Profile.DoesNotExist:
+            pass
+
+        # 1) Saare outstanding refresh tokens blacklist karo (best-effort) —
+        #    user delete hone ke baad bhi koi purana token kaam na kare.
+        try:
+            from rest_framework_simplejwt.token_blacklist.models import (
+                OutstandingToken, BlacklistedToken)
+            for t in OutstandingToken.objects.filter(user=user):
+                BlacklistedToken.objects.get_or_create(token=t)
+        except Exception:
+            logger.exception("token blacklist failed during account delete user=%s", user_id)
+
+        # 2) Hard delete (ek transaction mein — aadha delete nahi hoga)
+        with transaction.atomic():
+            user.delete()
+
+        # 3) Cloudinary photo hatao (best-effort — fail hua toh bhi account delete ho chuka)
+        public_id = _cloudinary_public_id(photo_url)
+        if public_id:
+            try:
+                cloudinary.uploader.destroy(public_id, invalidate=True)
+            except Exception:
+                logger.exception("cloudinary destroy failed public_id=%s", public_id)
+
+        logger.info("account deleted user=%s", user_id)
+        return Response({"message": "Account deleted"}, status=status.HTTP_200_OK)
 
 
 # ─────────────────────────────────────────

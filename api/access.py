@@ -23,7 +23,7 @@ class SubscriptionRequired(APIException):
 
 
 def is_review_account(user):
-    test_phone = os.getenv("TEST_PHONE_NUMBER", "+918171639413").strip()
+    test_phone = os.getenv("TEST_PHONE_NUMBER", "+919898989898").strip()
     return bool(test_phone) and user.phone == test_phone
 
 
