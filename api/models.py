@@ -38,7 +38,7 @@ PLAN_CHOICES = [
 # ⚠️ "opentalk_week" Console mein MONTHLY base plan ke saath bana hai, isliye
 # wo MONTH plan se jura hai (naam confusing hai par chalta hai).
 PLAN_CONFIG = {
-    "week":         {"label": "1 Week",   "product_id": "opentalk_1week",   "price_inr": 49,  "duration_days": 7,  "tag": None},
+    "week":         {"label": "1 Week",   "product_id": "opentalk_1week",   "price_inr": 4,  "duration_days": 7,  "tag": None},
     "month":        {"label": "1 Month",  "product_id": "opentalk_week",    "price_inr": 99,  "duration_days": 30, "tag": "MOST POPULAR"},
     "three_months": {"label": "3 Months", "product_id": "opentalk_3months", "price_inr": 249, "duration_days": 90, "tag": "BEST VALUE"},
 }
