@@ -15,6 +15,7 @@ from django.db import transaction
 from django.db.models import Q, OuterRef, Subquery
 from django.utils import timezone
 from django.conf import settings
+from django.http import HttpResponse
 from .zego_token import get_zego_token
 from datetime import timedelta
 import cloudinary, cloudinary.uploader
@@ -42,6 +43,7 @@ from .serializers import (
     get_user_from_id,
 )
 from .utils import get_nearby_users, get_interest_suggestions, haversine_km
+from .child_safety_page import CHILD_SAFETY_HTML
 from .access import HasActiveAccess, user_has_access, ensure_trial
 from . import google_play
 from .notifications import notify_new_message, notify_new_match
@@ -1068,6 +1070,19 @@ class FeedbackView(APIView):
         s.is_valid(raise_exception=True)
         s.save(user=request.user)
         return Response({"message": "Feedback submitted"}, status=201)
+
+
+# ─────────────────────────────────────────
+# CHILD SAFETY STANDARDS  (public page — Play Console wale index.html jaisa hi)
+# ─────────────────────────────────────────
+
+class ChildSafetyStandardsView(APIView):
+    """GET /api/child-safety/ — public, login ki zaroorat nahi."""
+    permission_classes     = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return HttpResponse(CHILD_SAFETY_HTML, content_type="text/html; charset=utf-8")
 
 
 # ─────────────────────────────────────────

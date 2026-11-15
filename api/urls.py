@@ -9,7 +9,7 @@ from .views import (
     PhotoUploadView, LiveToggleView,
     SearchView, NearbyUsersView,
     LikeView, MatchListView,
-    AccountDeleteView,
+    AccountDeleteView, ChildSafetyStandardsView,
     ConversationListView, MessageListView, StartConversationView,
     MessageDeleteView, ConversationClearView, ConversationDeleteView,
     NotificationListView, NotificationUnreadCountView,
@@ -66,6 +66,7 @@ urlpatterns = [
     path("block/<str:user_id>/",   BlockView.as_view(),             name="unblock"),
     path("report/",                ReportView.as_view(),            name="report"),
     path("feedback/",              FeedbackView.as_view(),          name="feedback"),
+    path("child-safety/",          ChildSafetyStandardsView.as_view(), name="child-safety"),
 
     # ── SUBSCRIPTION / GOOGLE PLAY ──
     path("subscriptions/plans/",         SubscriptionPlansView.as_view(),   name="subscription-plans"),
