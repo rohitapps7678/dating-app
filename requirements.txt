@@ -17,3 +17,4 @@ firebase-admin>=6.4.0
 pycryptodome
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
+CHILD_SAFETY_HTML
